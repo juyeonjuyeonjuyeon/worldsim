@@ -1,13 +1,98 @@
 import bpy
 import random
 import math
-import os
+import mathutils
 
 # --- 초기화 ---
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 for mesh in bpy.data.meshes:
     bpy.data.meshes.remove(mesh)
+
+# --- 재질 생성 헬퍼 ---
+def make_mat(name, color, roughness=0.9):
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = color
+    bsdf.inputs["Roughness"].default_value = roughness
+    return mat
+
+# --- 나무 생성 ---
+def make_tree(x, y, scale, seed):
+    random.seed(seed)
+    tree_objects = []
+
+    trunk_h = 2.8 * scale
+    trunk_mat = make_mat(f"Trunk_{seed}", (0.20, 0.12, 0.05, 1))
+
+    # 기둥 (5단 테이퍼)
+    for i in range(5):
+        seg_h = trunk_h / 5
+        z_ctr = i * seg_h + seg_h / 2
+        r = 0.13 * scale * (1 - i * 0.14)
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=10, radius=r, depth=seg_h,
+            location=(x, y, z_ctr)
+        )
+        obj = bpy.context.active_object
+        obj.data.materials.append(trunk_mat)
+        tree_objects.append(obj)
+
+    # 가지 (4~6개)
+    n_branches = random.randint(4, 6)
+    branch_mat = make_mat(f"Branch_{seed}", (0.18, 0.10, 0.04, 1))
+    for i in range(n_branches):
+        b_z = trunk_h * random.uniform(0.35, 0.80)
+        b_angle = random.uniform(35, 65)
+        b_dir = random.uniform(0, 360)
+        b_len = scale * random.uniform(0.9, 1.6)
+
+        rad_a = math.radians(b_angle)
+        rad_d = math.radians(b_dir)
+        bx = x + math.sin(rad_a) * math.cos(rad_d) * b_len * 0.5
+        by = y + math.sin(rad_a) * math.sin(rad_d) * b_len * 0.5
+        bz = b_z + math.cos(rad_a) * b_len * 0.5
+
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=6, radius=0.04 * scale, depth=b_len,
+            location=(bx, by, bz)
+        )
+        branch = bpy.context.active_object
+        branch.rotation_euler[1] = rad_a
+        branch.rotation_euler[2] = rad_d
+        branch.data.materials.append(branch_mat)
+        tree_objects.append(branch)
+
+    # 잎 클러스터 (10~16개 구체 흩뿌리기)
+    n_clusters = random.randint(10, 16)
+    crown_base = trunk_h * 0.40
+    crown_h = trunk_h * 0.75
+
+    for i in range(n_clusters):
+        t = random.uniform(0, 1)
+        spread = (1 - t * 0.45) * scale * 1.1
+        angle = random.uniform(0, 360)
+
+        cx = x + spread * math.cos(math.radians(angle)) * random.uniform(0.2, 1.0)
+        cy = y + spread * math.sin(math.radians(angle)) * random.uniform(0.2, 1.0)
+        cz = crown_base + t * crown_h + random.uniform(-0.15, 0.15) * scale
+
+        cr = scale * random.uniform(0.28, 0.52)
+        g = random.uniform(0.22, 0.38)
+        leaf_mat = make_mat(f"Leaf_{seed}_{i}", (0.05, g, 0.04, 1))
+
+        bpy.ops.mesh.primitive_ico_sphere_add(
+            subdivisions=2, radius=cr,
+            location=(cx, cy, cz)
+        )
+        cluster = bpy.context.active_object
+        cluster.scale.z = random.uniform(0.65, 1.25)
+        bpy.ops.object.transform_apply(scale=True)
+        cluster.data.materials.append(leaf_mat)
+        tree_objects.append(cluster)
+
+    return tree_objects
 
 # --- 지형 ---
 bpy.ops.mesh.primitive_plane_add(size=50, location=(0, 0, 0))
@@ -24,46 +109,18 @@ noise_tex.noise_scale = 3.0
 displace.texture = noise_tex
 displace.strength = 0.8
 bpy.ops.object.modifier_apply(modifier="Displace")
+terrain.data.materials.append(make_mat("Ground", (0.10, 0.22, 0.06, 1)))
 
-ground_mat = bpy.data.materials.new(name="Ground")
-ground_mat.use_nodes = True
-bsdf = ground_mat.node_tree.nodes["Principled BSDF"]
-bsdf.inputs["Base Color"].default_value = (0.10, 0.22, 0.06, 1)
-bsdf.inputs["Roughness"].default_value = 1.0
-terrain.data.materials.append(ground_mat)
-
-# --- 나무 ---
-def make_tree(x, y, scale):
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=0.08 * scale, depth=1.8 * scale,
-        location=(x, y, 0.9 * scale)
-    )
-    trunk = bpy.context.active_object
-    trunk_mat = bpy.data.materials.new(name=f"Trunk_{x:.0f}{y:.0f}")
-    trunk_mat.use_nodes = True
-    trunk_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.22, 0.13, 0.04, 1)
-    trunk.data.materials.append(trunk_mat)
-
-    for z_offset, radius in [(1.8, 1.1), (2.4, 0.85), (3.0, 0.55)]:
-        bpy.ops.mesh.primitive_cone_add(
-            radius1=radius * scale, radius2=0, depth=1.0 * scale,
-            location=(x, y, z_offset * scale)
-        )
-        leaves = bpy.context.active_object
-        leaf_mat = bpy.data.materials.new(name=f"Leaf_{x:.0f}{y:.0f}{z_offset}")
-        leaf_mat.use_nodes = True
-        g = random.uniform(0.28, 0.40)
-        leaf_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.05, g, 0.04, 1)
-        leaves.data.materials.append(leaf_mat)
-
+# --- 나무 배치 ---
 random.seed(7)
-for _ in range(30):
-    x = random.uniform(-20, 20)
-    y = random.uniform(-20, 20)
-    if abs(x) < 4 and abs(y) < 4:
+for _ in range(22):
+    x = random.uniform(-19, 19)
+    y = random.uniform(-19, 19)
+    if abs(x) < 5 and abs(y) < 5:
         continue
-    scale = random.uniform(0.7, 2.0)
-    make_tree(x, y, scale)
+    scale = random.uniform(0.7, 1.8)
+    seed = random.randint(0, 9999)
+    make_tree(x, y, scale, seed)
 
 # --- 하늘 ---
 world = bpy.data.worlds["World"]
@@ -92,36 +149,26 @@ sun.name = "Sun"
 sun.data.energy = 5.0
 sun.data.angle = math.radians(0.53)
 
-# --- 24시간 애니메이션 (240프레임 = 24시간, 1프레임 = 6분) ---
+# --- 24시간 애니메이션 ---
 scene = bpy.context.scene
 scene.frame_start = 0
 scene.frame_end = 240
-
-MAX_ELEVATION = math.radians(60)  # 최대 태양 고도 (위도 기준 약 한국)
+MAX_ELEV = math.radians(60)
 
 for frame in range(0, 241, 5):
-    hour = frame / 10.0  # 0~24시
-
-    # 태양 고도: 사인파 (새벽 6시 일출, 낮 12시 최고, 저녁 6시 일몰)
-    elevation = MAX_ELEVATION * math.sin(2 * math.pi * (hour / 24) - math.pi / 2)
-
-    # 태양 방위각: 동→남→서 (동쪽에서 시작)
+    hour = frame / 10.0
+    elevation = MAX_ELEV * math.sin(2 * math.pi * (hour / 24) - math.pi / 2)
     azimuth = math.radians(hour / 24 * 360)
 
     scene.frame_set(frame)
-
-    # 하늘 텍스처 키프레임
     sky_tex.sun_elevation = elevation
     sky_tex.sun_rotation = azimuth
     sky_tex.keyframe_insert(data_path="sun_elevation", frame=frame)
     sky_tex.keyframe_insert(data_path="sun_rotation", frame=frame)
-
-    # 태양 램프 키프레임
     sun.rotation_euler[0] = math.pi / 2 - elevation
     sun.rotation_euler[2] = azimuth
     sun.keyframe_insert(data_path="rotation_euler", frame=frame)
 
-# 시작 프레임을 일출(60 = 오전 6시)로 설정
 scene.frame_set(60)
 
 # --- 카메라 ---
@@ -133,12 +180,12 @@ cam.rotation_euler[2] = math.radians(40)
 cam.data.lens = 35
 scene.camera = cam
 
-# --- 렌더러: EEVEE (실시간 뷰포트용) ---
+# --- 렌더 설정 ---
 scene.render.engine = 'BLENDER_EEVEE'
 scene.render.resolution_x = 1920
 scene.render.resolution_y = 1080
 
-# --- .blend 저장 ---
+# --- 저장 ---
 blend_path = r"C:\Users\kkjjy\Documents\WorldSim\forest_world.blend"
 bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 print(f"저장 완료: {blend_path}")
