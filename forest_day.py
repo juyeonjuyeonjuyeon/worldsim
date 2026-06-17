@@ -186,6 +186,6 @@ scene.render.resolution_x = 1920
 scene.render.resolution_y = 1080
 
 # --- 저장 ---
-blend_path = r"C:\Users\kkjjy\Documents\WorldSim\forest_world.blend"
+blend_path = r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_day_v001.blend"
 bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 print(f"저장 완료: {blend_path}")

@@ -36,7 +36,7 @@ scene.build()
 
 # 시뮬레이션 실행 + 프레임별 파티클 위치 저장
 n_frames = 120   # 약 2초 분량
-output_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\rain_sim"
+output_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_genesis_rain_sim"
 os.makedirs(output_dir, exist_ok=True)
 
 print(f"비 시뮬레이션 시작 ({n_frames}프레임)...")

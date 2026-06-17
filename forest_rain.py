@@ -223,7 +223,7 @@ try:
 except:
     scene.cycles.device = 'CPU'
 
-output_path = r"C:\Users\kkjjy\Documents\WorldSim\output\rainy_forest.png"
+output_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v001.png"
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 scene.render.filepath = output_path
 scene.frame_set(1)
@@ -233,6 +233,6 @@ bpy.ops.render.render(write_still=True)
 print(f"완료: {output_path}")
 
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\rainy_forest.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v001.blend"
 )
 print("씬 저장 완료")
