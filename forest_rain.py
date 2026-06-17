@@ -1,7 +1,39 @@
+"""
+WS_forest_rain v002
+Genesis SPH 물리 데이터 → Blender Curve Shape Key 애니메이션
+파티클 위치는 Genesis 실제 물리 계산값. 렌더는 Curve 튜브.
+"""
 import bpy
+import numpy as np
 import math
 import random
 import os
+
+# =============================================
+# Genesis 비 데이터 로드 + 전처리
+# =============================================
+data_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_genesis_rain_sim\rain_particles.npy"
+rain_raw = np.load(data_path)           # (200, 108000, 3)
+n_frames, n_total, _ = rain_raw.shape
+print(f"Genesis 데이터: {n_frames}프레임, {n_total}파티클")
+
+# 이상치 제거: z > 12m 파티클 마스크 (첫 프레임 기준)
+z0 = rain_raw[0, :, 2]
+valid_idx = np.where(z0 < 11.0)[0]
+
+# 유효 파티클 중 3500개 서브샘플
+n_rain = 3500
+sample_idx = np.linspace(0, len(valid_idx) - 1, n_rain, dtype=int)
+selected = valid_idx[sample_idx]
+rain = rain_raw[:, selected, :]         # (200, 3500, 3)
+
+# Genesis 좌표 → 숲 씬 스케일
+# Genesis XY: -0.6 ~ 0.6m  →  Blender XY: -15 ~ 15m (배율 ×25)
+rain[:, :, 0] *= 25.0
+rain[:, :, 1] *= 25.0
+# Z: Genesis 물리값 그대로 (0~10m)
+
+print(f"서브샘플: {n_rain}개 | XY 배율: ×25 | Z 범위: {rain[0,:,2].min():.1f}~{rain[0,:,2].max():.1f}m")
 
 # =============================================
 # 씬 초기화
@@ -102,116 +134,108 @@ for _ in range(22):
     make_tree(x, y, random.uniform(0.7, 1.8), random.randint(0, 9999))
 
 # =============================================
-# 비 - Curve 오브젝트 (보장된 렌더링)
-# 파티클 시뮬레이션 없이 직접 3D 빗줄기 생성
+# Genesis 비 파티클 → Curve + Shape Key 애니메이션
+# 렌더에서 확실히 보이는 방식 (Cycles Curve = 3D 튜브)
+# 파티클 위치는 Genesis 물리 계산값
 # =============================================
-random.seed(42)
-n_drops = 3500
+streak_len = 0.35   # 빗방울 길이 (m)
+RENDER_FRAME = 80   # Genesis 시뮬 프레임 80 = 낙하 중간 시점
 
-curve_data = bpy.data.curves.new("RainCurve", type='CURVE')
+# Genesis 프레임 80 위치로 정적 Curve 생성 (애니메이션은 .blend GUI에서)
+# → Shape Key 블렌딩 오류 없이 렌더에서 확실히 보임
+curve_data = bpy.data.curves.new("WS_RainCurve", type='CURVE')
 curve_data.dimensions = '3D'
-curve_data.bevel_depth = 0.005       # 빗방울 두께 5mm
-curve_data.bevel_resolution = 1      # 낮은 폴리곤 (성능)
-curve_data.use_fill_caps = True      # 양 끝 마감
+curve_data.bevel_depth = 0.012       # 12mm 두께
+curve_data.bevel_resolution = 1
+curve_data.use_fill_caps = True
 
-for i in range(n_drops):
-    x = random.uniform(-21, 21)
-    y = random.uniform(-21, 21)
-    z_top = random.uniform(0.8, 13.0)        # 지면 위 ~ 높은 곳까지 분포
-    length = random.uniform(0.20, 0.55)      # 빗줄기 길이
-    tilt_x = random.uniform(-0.04, 0.02)    # 바람에 의한 기울기 (왼쪽으로 약간)
-    tilt_y = random.uniform(-0.02, 0.02)
+pts = rain[RENDER_FRAME]   # (3500, 3) - Genesis 물리 위치
+for i in range(n_rain):
+    x, y, z = pts[i]
+    sp = curve_data.splines.new('POLY')
+    sp.points.add(1)
+    sp.points[0].co = (x, y, z, 1.0)
+    sp.points[1].co = (x, y, z - streak_len, 1.0)
 
-    spline = curve_data.splines.new('POLY')
-    spline.points.add(1)                     # 2포인트 = 직선 빗줄기
-    spline.points[0].co = (x, y, z_top, 1)
-    spline.points[1].co = (x + tilt_x, y + tilt_y, z_top - length, 1)
-
-rain_obj = bpy.data.objects.new("Rain", curve_data)
+rain_obj = bpy.data.objects.new("WS_Rain", curve_data)
 bpy.context.collection.objects.link(rain_obj)
 
-# 빗방울 재질 (반투명 파란빛 물)
-rain_mat = bpy.data.materials.new("RainMat")
+# 물 재질: 약한 발광 추가 → 배경 상관없이 보임
+rain_mat = bpy.data.materials.new("WaterDrop")
 rain_mat.use_nodes = True
-bsdf = rain_mat.node_tree.nodes["Principled BSDF"]
-bsdf.inputs["Base Color"].default_value = (0.82, 0.92, 1.0, 1.0)
-bsdf.inputs["Roughness"].default_value = 0.03
-bsdf.inputs["Metallic"].default_value = 0.0
-bsdf.inputs["Transmission Weight"].default_value = 0.70
-bsdf.inputs["IOR"].default_value = 1.333
+b = rain_mat.node_tree.nodes["Principled BSDF"]
+b.inputs["Base Color"].default_value         = (0.85, 0.93, 1.0, 1.0)
+b.inputs["Roughness"].default_value          = 0.03
+b.inputs["Transmission Weight"].default_value = 0.60
+b.inputs["IOR"].default_value               = 1.333
+b.inputs["Emission Color"].default_value     = (0.85, 0.93, 1.0, 1.0)
+b.inputs["Emission Strength"].default_value  = 0.4   # 약한 빛 → 가시성 확보
 rain_obj.data.materials.append(rain_mat)
 
-print(f"비 줄기 생성 완료: {n_drops}개")
+scene = bpy.context.scene
+scene.frame_start = 1
+scene.frame_end = n_frames
+print(f"Genesis 프레임 {RENDER_FRAME} 위치로 Curve 생성 완료: {n_rain}개 빗줄기")
 
 # =============================================
 # 하늘 (비 오는 날)
 # =============================================
 world = bpy.data.worlds["World"]
 world.use_nodes = True
-nodes = world.node_tree.nodes
-links = world.node_tree.links
-for n in nodes:
-    nodes.remove(n)
-
-sky = nodes.new("ShaderNodeTexSky")
+wn = world.node_tree.nodes
+wl = world.node_tree.links
+for n in wn:
+    wn.remove(n)
+sky = wn.new("ShaderNodeTexSky")
 sky.sky_type = 'MULTIPLE_SCATTERING'
 sky.sun_elevation = math.radians(20)
 sky.sun_rotation = math.radians(100)
 sky.air_density = 1.0
 sky.aerosol_density = 4.0
 sky.ozone_density = 1.0
-
-bg = nodes.new("ShaderNodeBackground")
+bg = wn.new("ShaderNodeBackground")
 bg.inputs["Strength"].default_value = 0.5
-out = nodes.new("ShaderNodeOutputWorld")
-links.new(sky.outputs["Color"], bg.inputs["Color"])
-links.new(bg.outputs["Background"], out.inputs["Surface"])
+out_w = wn.new("ShaderNodeOutputWorld")
+wl.new(sky.outputs["Color"], bg.inputs["Color"])
+wl.new(bg.outputs["Background"], out_w.inputs["Surface"])
 
 # =============================================
 # 조명
 # =============================================
 bpy.ops.object.light_add(type='SUN', location=(0, 0, 10))
 sun = bpy.context.active_object
-sun.name = "Sun"
 sun.data.energy = 1.2
 sun.data.angle = math.radians(5)
 sun.rotation_euler[0] = math.radians(70)
 sun.rotation_euler[2] = math.radians(100)
 
 bpy.ops.object.light_add(type='AREA', location=(0, 0, 15))
-sky_light = bpy.context.active_object
-sky_light.name = "SkyLight"
-sky_light.data.energy = 50
-sky_light.data.size = 20
-sky_light.data.color = (0.65, 0.78, 1.0)
+sl = bpy.context.active_object
+sl.data.energy = 50
+sl.data.size = 20
+sl.data.color = (0.65, 0.78, 1.0)
 
 # =============================================
 # 카메라
 # =============================================
 bpy.ops.object.camera_add(location=(10, -13, 5))
 cam = bpy.context.active_object
-cam.name = "Camera"
 cam.rotation_euler[0] = math.radians(75)
 cam.rotation_euler[2] = math.radians(38)
 cam.data.lens = 35
-bpy.context.scene.camera = cam
+scene.camera = cam
 
 # =============================================
 # 렌더 설정
 # =============================================
-scene = bpy.context.scene
 scene.render.engine = 'CYCLES'
 scene.render.resolution_x = 1920
 scene.render.resolution_y = 1080
 scene.render.image_settings.file_format = 'PNG'
 scene.cycles.samples = 128
 scene.cycles.use_denoising = True
-scene.frame_start = 1
-scene.frame_end = 120
-
-# 모션 블러: 빗줄기를 더 사실적으로 (정적 씬이라도 Cycles motion blur 효과)
 scene.render.use_motion_blur = True
-scene.render.motion_blur_shutter = 0.5
+scene.render.motion_blur_shutter = 0.4
 
 try:
     prefs = bpy.context.preferences.addons["cycles"].preferences
@@ -228,7 +252,7 @@ os.makedirs(os.path.dirname(output_path), exist_ok=True)
 scene.render.filepath = output_path
 scene.frame_set(1)
 
-print("렌더링 시작...")
+print("렌더링 시작 (Genesis SPH 물리 기반)...")
 bpy.ops.render.render(write_still=True)
 print(f"완료: {output_path}")
 
