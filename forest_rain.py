@@ -1,7 +1,8 @@
 """
 WS_forest_rain v002
-Genesis SPH 물리 데이터 → Blender Curve Shape Key 애니메이션
-파티클 위치는 Genesis 실제 물리 계산값. 렌더는 Curve 튜브.
+Genesis SPH 물리 데이터 → Blender Curve + 프레임 핸들러 애니메이션
+Shape Key 블렌딩 대신 frame_change_post 핸들러로 Curve 좌표 직접 기록.
+update_tag() 호출로 depsgraph 반영 보장.
 """
 import bpy
 import numpy as np
@@ -139,19 +140,16 @@ for _ in range(22):
 # 파티클 위치는 Genesis 물리 계산값
 # =============================================
 streak_len = 0.35   # 빗방울 길이 (m)
-RENDER_FRAME = 80   # Genesis 시뮬 프레임 80 = 낙하 중간 시점
 
-# Genesis 프레임 80 위치로 정적 Curve 생성 (애니메이션은 .blend GUI에서)
-# → Shape Key 블렌딩 오류 없이 렌더에서 확실히 보임
+# Curve 생성: 프레임 0 위치로 초기화
 curve_data = bpy.data.curves.new("WS_RainCurve", type='CURVE')
 curve_data.dimensions = '3D'
-curve_data.bevel_depth = 0.012       # 12mm 두께
+curve_data.bevel_depth = 0.012       # 12mm 두께 (테스트에서 확인)
 curve_data.bevel_resolution = 1
 curve_data.use_fill_caps = True
 
-pts = rain[RENDER_FRAME]   # (3500, 3) - Genesis 물리 위치
 for i in range(n_rain):
-    x, y, z = pts[i]
+    x, y, z = rain[0, i]
     sp = curve_data.splines.new('POLY')
     sp.points.add(1)
     sp.points[0].co = (x, y, z, 1.0)
@@ -160,22 +158,44 @@ for i in range(n_rain):
 rain_obj = bpy.data.objects.new("WS_Rain", curve_data)
 bpy.context.collection.objects.link(rain_obj)
 
-# 물 재질: 약한 발광 추가 → 배경 상관없이 보임
+# 물 재질: 약한 발광 (테스트에서 확인된 가시성 설정)
 rain_mat = bpy.data.materials.new("WaterDrop")
 rain_mat.use_nodes = True
 b = rain_mat.node_tree.nodes["Principled BSDF"]
-b.inputs["Base Color"].default_value         = (0.85, 0.93, 1.0, 1.0)
-b.inputs["Roughness"].default_value          = 0.03
+b.inputs["Base Color"].default_value          = (0.85, 0.93, 1.0, 1.0)
+b.inputs["Roughness"].default_value           = 0.03
 b.inputs["Transmission Weight"].default_value = 0.60
-b.inputs["IOR"].default_value               = 1.333
-b.inputs["Emission Color"].default_value     = (0.85, 0.93, 1.0, 1.0)
-b.inputs["Emission Strength"].default_value  = 0.4   # 약한 빛 → 가시성 확보
+b.inputs["IOR"].default_value                = 1.333
+b.inputs["Emission Color"].default_value      = (0.85, 0.93, 1.0, 1.0)
+b.inputs["Emission Strength"].default_value   = 0.4
 rain_obj.data.materials.append(rain_mat)
+
+# 프레임 핸들러: 매 프레임마다 Genesis 데이터를 Curve에 직접 기록
+# Shape Key 블렌딩 없음 → 렌더에서 확실히 작동
+_rain_data = rain        # 핸들러에서 접근할 numpy 배열
+_n_frames  = n_frames
+_n_rain    = n_rain
+_slen      = streak_len
+_rain_obj  = rain_obj
+
+def update_rain(scene):
+    f = max(0, min(scene.frame_current - 1, _n_frames - 1))
+    pts = _rain_data[f]
+    splines = _rain_obj.data.splines
+    n = min(_n_rain, len(splines))
+    for i in range(n):
+        x, y, z = pts[i]
+        splines[i].points[0].co = (x, y, z,         1.0)
+        splines[i].points[1].co = (x, y, z - _slen, 1.0)
+    _rain_obj.data.update_tag()   # depsgraph에 변경 알림 (렌더 반영 필수)
+
+bpy.app.handlers.frame_change_post.append(update_rain)
 
 scene = bpy.context.scene
 scene.frame_start = 1
 scene.frame_end = n_frames
-print(f"Genesis 프레임 {RENDER_FRAME} 위치로 Curve 생성 완료: {n_rain}개 빗줄기")
+
+print("프레임 핸들러 등록 완료 (Genesis 데이터 직접 Curve 기록)")
 
 # =============================================
 # 하늘 (비 오는 날)
@@ -247,16 +267,16 @@ try:
 except:
     scene.cycles.device = 'CPU'
 
-output_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v001.png"
+output_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v002.png"
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 scene.render.filepath = output_path
-scene.frame_set(1)
+scene.frame_set(80)   # Genesis 비가 한창 내리는 시점 → handler가 Genesis[79] 위치로 업데이트
 
-print("렌더링 시작 (Genesis SPH 물리 기반)...")
+print("렌더링 시작 (Genesis SPH 물리 기반, 프레임 핸들러 방식)...")
 bpy.ops.render.render(write_still=True)
 print(f"완료: {output_path}")
 
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v001.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v002.blend"
 )
 print("씬 저장 완료")
