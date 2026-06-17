@@ -44,57 +44,55 @@ nodes = nt.nodes
 links = nt.links
 for n in list(nodes): nodes.remove(n)
 
-# 텍스처 좌표 (하늘 방향 벡터)
-tc   = nodes.new("ShaderNodeTexCoord")
-sep  = nodes.new("ShaderNodeSeparateXYZ")   # Z = 위/아래 방향
+# World 셰이더에서 실제 하늘 방향 벡터: ShaderNodeNewGeometry → Incoming
+# Incoming = 카메라 레이 방향 (하늘을 향하는 단위 벡터)
+# Z: +1=천정, 0=지평선, -1=지면 아래
+geo  = nodes.new("ShaderNodeNewGeometry")
+sep  = nodes.new("ShaderNodeSeparateXYZ")
 
-# 태양 방향 계산용 (일몰: 태양이 지평선에 낮게 걸림)
-# 태양 방위각: +X 방향 (east), 고도각 5°
+# 태양 방향 벡터 (일몰: 고도각 5°, +X 방향이 동쪽)
 sun_elev_rad = math.radians(5.0)
 sun_dir_x = math.cos(sun_elev_rad)   # ~0.996
 sun_dir_z = math.sin(sun_elev_rad)   # ~0.087
 
-# Vector Math: 하늘 벡터 · 태양 방향 → 각도 기반 그라디언트
-# 태양 근접도 = dot(sky_dir, sun_dir) 에 가까울수록 파란 코로나
+# 코로나 계산: dot(sky_incoming, sun_dir) → 태양 근접도
 dot_node = nodes.new("ShaderNodeVectorMath")
 dot_node.operation = 'DOT_PRODUCT'
-sun_vec  = nodes.new("ShaderNodeCombineXYZ")
+sun_vec = nodes.new("ShaderNodeCombineXYZ")
 sun_vec.inputs["X"].default_value = sun_dir_x
 sun_vec.inputs["Y"].default_value = 0.0
 sun_vec.inputs["Z"].default_value = sun_dir_z
 
-# 고도(Z) 기반 하늘 그라디언트
-# 낮은 고도 = 지평선 색 (황갈), 높은 고도 = 상공 색 (짙은 갈색)
+# 고도 기반 그라디언트
+# Incoming.Z: 지평선=0, 천정=1 → MapRange로 정규화
+z_remap = nodes.new("ShaderNodeMapRange")
+z_remap.inputs["From Min"].default_value = -0.2   # 지평선 조금 아래부터
+z_remap.inputs["From Max"].default_value =  1.0   # 천정
+z_remap.inputs["To Min"].default_value   =  0.0
+z_remap.inputs["To Max"].default_value   =  1.0
+
 elev_ramp = nodes.new("ShaderNodeValToRGB")
 elev_ramp.color_ramp.interpolation = 'LINEAR'
-elev_ramp.color_ramp.elements[0].position  = 0.0
-elev_ramp.color_ramp.elements[0].color     = (0.88, 0.70, 0.52, 1.0)  # 지평선: 황갈
-elev_ramp.color_ramp.elements[1].position  = 1.0
-elev_ramp.color_ramp.elements[1].color     = (0.40, 0.28, 0.20, 1.0)  # 상공: 짙은 갈색
-# 중간 색 추가 (지평선 위 밝은 살구빛 띠)
-elev_ramp.color_ramp.elements.new(0.15)
-elev_ramp.color_ramp.elements[1].color     = (0.92, 0.75, 0.58, 1.0)  # 지평선 위 밝은 띠
+elev_ramp.color_ramp.elements[0].position = 0.0
+elev_ramp.color_ramp.elements[0].color    = (0.88, 0.70, 0.52, 1.0)  # 지평선: 황갈
+elev_ramp.color_ramp.elements[1].position = 1.0
+elev_ramp.color_ramp.elements[1].color    = (0.38, 0.26, 0.18, 1.0)  # 상공: 짙은 갈색
+elev_ramp.color_ramp.elements.new(0.12)
+elev_ramp.color_ramp.elements[1].color    = (0.92, 0.76, 0.58, 1.0)  # 지평선 위 밝은 띠
 
-# 고도값 정규화: Z (-1~1) → (0~1)
-z_remap = nodes.new("ShaderNodeMapRange")
-z_remap.inputs["From Min"].default_value = -0.3
-z_remap.inputs["From Max"].default_value = 1.0
-z_remap.inputs["To Min"].default_value   = 0.0
-z_remap.inputs["To Max"].default_value   = 1.0
-
-# 태양-코로나 dot product → 파란 코로나 색상
+# 태양 코로나 (파란 Mie 전방산란 효과)
 corona_ramp = nodes.new("ShaderNodeValToRGB")
-corona_ramp.color_ramp.interpolation = 'LINEAR'
-corona_ramp.color_ramp.elements[0].position  = 0.0
-corona_ramp.color_ramp.elements[0].color     = (0.0, 0.0, 0.0, 1.0)   # 태양 반대: 검정(기여 없음)
-corona_ramp.color_ramp.elements[1].position  = 0.80
-corona_ramp.color_ramp.elements[1].color     = (0.0, 0.0, 0.0, 1.0)
-corona_ramp.color_ramp.elements.new(0.92)
-corona_ramp.color_ramp.elements[2].color     = (0.15, 0.30, 0.70, 1.0) # 태양 근처: 파란 코로나
-corona_ramp.color_ramp.elements.new(0.99)
-corona_ramp.color_ramp.elements[3].color     = (0.90, 0.88, 0.75, 1.0) # 태양 원반: 밝은 흰색
+corona_ramp.color_ramp.interpolation = 'EASE'
+corona_ramp.color_ramp.elements[0].position = 0.0
+corona_ramp.color_ramp.elements[0].color    = (0.0, 0.0, 0.0, 1.0)
+corona_ramp.color_ramp.elements[1].position = 1.0
+corona_ramp.color_ramp.elements[1].color    = (0.0, 0.0, 0.0, 1.0)
+corona_ramp.color_ramp.elements.new(0.88)
+corona_ramp.color_ramp.elements[2].color    = (0.10, 0.25, 0.65, 1.0)  # 파란 코로나
+corona_ramp.color_ramp.elements.new(0.98)
+corona_ramp.color_ramp.elements[3].color    = (0.92, 0.90, 0.80, 1.0)  # 태양 원반
 
-# 하늘색 = 고도 그라디언트 + 코로나 오버레이 (ADD)
+# 하늘색 = 고도 그라디언트 + 코로나 오버레이
 mix_sky = nodes.new("ShaderNodeMixRGB")
 mix_sky.blend_type = 'ADD'
 mix_sky.inputs["Fac"].default_value = 1.0
@@ -104,14 +102,14 @@ bg.inputs["Strength"].default_value = 1.2
 
 out_w = nodes.new("ShaderNodeOutputWorld")
 
-# 연결
-links.new(tc.outputs["Generated"], sep.inputs["Vector"])
-links.new(sep.outputs["Z"],        z_remap.inputs["Value"])
-links.new(z_remap.outputs["Result"], elev_ramp.inputs["Fac"])
+# 연결: Incoming → 고도(Z) + 코로나(dot)
+links.new(geo.outputs["Incoming"],    sep.inputs["Vector"])
+links.new(sep.outputs["Z"],           z_remap.inputs["Value"])
+links.new(z_remap.outputs["Result"],  elev_ramp.inputs["Fac"])
 
-links.new(tc.outputs["Generated"], dot_node.inputs[0])
-links.new(sun_vec.outputs["Vector"], dot_node.inputs[1])
-links.new(dot_node.outputs["Value"], corona_ramp.inputs["Fac"])
+links.new(geo.outputs["Incoming"],    dot_node.inputs[0])
+links.new(sun_vec.outputs["Vector"],  dot_node.inputs[1])
+links.new(dot_node.outputs["Value"],  corona_ramp.inputs["Fac"])
 
 links.new(elev_ramp.outputs["Color"],  mix_sky.inputs["Color1"])
 links.new(corona_ramp.outputs["Color"],mix_sky.inputs["Color2"])
