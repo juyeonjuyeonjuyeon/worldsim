@@ -1,7 +1,8 @@
 """
-WS_forest_rain v003
-Genesis SPH 물리 기반 비 애니메이션 + 지면 스플래시 + 200프레임 영상 렌더링
-개선: 비 밀도 5000개, 풍각도, 지면 충돌 스플래시 링, 웅덩이, PNG 시퀀스 출력
+WS_forest_rain v004
+Genesis SPH 물리 기반 비 애니메이션 + 연속 강우 루프
+개선: 오프셋 반반 전략으로 연속 강우 (파티클 절반씩 100프레임 오프셋)
+지면 스플래시 링, 웅덩이, 200프레임 PNG 시퀀스 출력
 """
 import bpy
 import numpy as np
@@ -206,19 +207,29 @@ bs.inputs["Emission Strength"].default_value   = 0.6
 splash_obj.data.materials.append(splash_mat)
 
 # ─── 프레임 핸들러 ───
+# 연속 강우 전략: 파티클 절반을 100프레임 오프셋으로 운용
+# → 한쪽이 지면 근처일 때 다른 쪽은 상공 → 항상 모든 높이에 비가 내림
+# → f % n_frames 로 루프 가능
 _rain_data   = rain
 _n_frames    = n_frames
 _n_rain      = n_rain
+_n_half      = n_rain // 2       # 절반씩 오프셋
+_offset      = n_frames // 2     # 100프레임 오프셋
 _slen        = streak_len
 _wtilt       = wind_tilt
 _rain_obj    = rain_obj
 _splash_obj  = splash_obj
 _splash_max  = splash_max
-_splash_r    = 1.2   # 스플래시 반지름 (Blender 단위, XY 이미 ×25)
+_splash_r    = 1.2   # 스플래시 반지름 (Blender 단위)
 
 def update_scene(scene):
-    f = max(0, min(scene.frame_current - 1, _n_frames - 1))
-    pts = _rain_data[f]
+    f = (scene.frame_current - 1) % _n_frames   # 루프 지원
+
+    # 오프셋 반반: 앞 절반은 f, 뒤 절반은 (f + offset) % n_frames
+    f2 = (f + _offset) % _n_frames
+    pts1 = _rain_data[f][:_n_half]
+    pts2 = _rain_data[f2][_n_half:]
+    pts  = np.concatenate([pts1, pts2], axis=0)   # (n_rain, 3)
 
     # 비 Curve 업데이트 (풍각도 포함)
     rain_splines = _rain_obj.data.splines
@@ -229,8 +240,8 @@ def update_scene(scene):
         rain_splines[i].points[1].co = (x - _wtilt * _slen,   y, z + _slen,   1.0)
     _rain_obj.data.update_tag()
 
-    # 스플래시 Curve 업데이트 (지면 근접 파티클 → 링)
-    near = pts[pts[:, 2] < 0.35]   # z < 35cm 파티클
+    # 스플래시 Curve 업데이트 (합쳐진 pts 기준, z < 35cm → 링)
+    near = pts[pts[:, 2] < 0.35]
     splash_splines = _splash_obj.data.splines
     ns = min(_splash_max, len(splash_splines))
     for i in range(ns):
@@ -326,11 +337,11 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v003_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v004_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
-print("프리뷰 렌더링 (프레임 60)...")
+print("프리뷰 렌더링 (프레임 60, 오프셋 반반 연속 강우)...")
 bpy.ops.render.render(write_still=True)
 print(f"프리뷰 저장: {preview_path}")
 
@@ -338,24 +349,24 @@ print(f"프리뷰 저장: {preview_path}")
 # 200프레임 PNG 시퀀스 렌더링
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v003"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v004"
 os.makedirs(frame_dir, exist_ok=True)
 
-print(f"\n200프레임 애니메이션 렌더링 시작...")
+print(f"\n200프레임 애니메이션 렌더링 시작 (연속 강우 루프)...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v003_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v004_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
         print(f"  {f}/{n_frames} 완료")
 
-print(f"\n PNG 시퀀스 완료: {frame_dir}")
+print(f"\nPNG 시퀀스 완료: {frame_dir}")
 
 # =============================================
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v003.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v004.blend"
 )
-print("씬 저장: WS_forest_rain_v003.blend")
+print("씬 저장: WS_forest_rain_v004.blend")

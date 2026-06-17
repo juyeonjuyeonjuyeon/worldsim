@@ -6,13 +6,13 @@ forest_rain.py 렌더 완료 후 실행:
 import bpy
 import os
 
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v003"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v004"
 n_frames  = 200
 fps       = 24
-output    = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v003.mp4"
+output    = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v004.mp4"
 
 # 파일 존재 확인
-first = os.path.join(frame_dir, "WS_forest_rain_v003_0001.png")
+first = os.path.join(frame_dir, "WS_forest_rain_v004_0001.png")
 if not os.path.exists(first):
     print(f"오류: 프레임 파일 없음 - {first}")
     exit(1)
@@ -42,13 +42,13 @@ for s in list(seq.sequences_all):
 # 이미지 시퀀스 스트립 추가
 strip = seq.sequences.new_image(
     name="RainSeq",
-    filepath=os.path.join(frame_dir, "WS_forest_rain_v003_0001.png"),
+    filepath=os.path.join(frame_dir, "WS_forest_rain_v004_0001.png"),
     channel=1,
     frame_start=1
 )
 strip.directory = frame_dir + "\\"
 for i in range(n_frames):
-    fname = f"WS_forest_rain_v003_{i+1:04d}.png"
+    fname = f"WS_forest_rain_v004_{i+1:04d}.png"
     if i < len(strip.elements):
         strip.elements[i].filename = fname
     else:
