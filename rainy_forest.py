@@ -1,39 +1,22 @@
 import bpy
-import numpy as np
 import math
 import random
 import os
-
-# =============================================
-# Genesis 비 데이터 로드 + 스케일 조정
-# =============================================
-rain_raw = np.load(r"C:\Users\kkjjy\Documents\WorldSim\output\rain_sim\rain_particles.npy")
-n_frames, n_total, _ = rain_raw.shape  # (120, 36000, 3)
-
-# 파티클 서브샘플링 (2000개로 줄이기)
-n_rain = 2000
-idx = np.linspace(0, n_total - 1, n_rain, dtype=int)
-rain = rain_raw[:, idx, :]  # (120, 2000, 3)
-
-# Genesis 좌표 → 숲 씬 스케일로 변환
-# XY: 1.2m 범위 → 30m 범위로 확대
-# Z: +4m 오프셋 (나무 높이 위에서 시작)
-rain[:, :, 0] *= 20.0
-rain[:, :, 1] *= 20.0
-rain[:, :, 2] += 4.0
 
 # =============================================
 # 씬 초기화
 # =============================================
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
-for d in bpy.data.meshes:
-    bpy.data.meshes.remove(d)
+for mesh in list(bpy.data.meshes):
+    bpy.data.meshes.remove(mesh)
+for mat in list(bpy.data.materials):
+    bpy.data.materials.remove(mat)
 
 # =============================================
 # 재질 헬퍼
 # =============================================
-def make_mat(name, color, roughness=0.9, metallic=0.0, transmission=0.0):
+def make_mat(name, color, roughness=0.9, metallic=0.0, transmission=0.0, ior=1.45):
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     b = mat.node_tree.nodes["Principled BSDF"]
@@ -41,6 +24,7 @@ def make_mat(name, color, roughness=0.9, metallic=0.0, transmission=0.0):
     b.inputs["Roughness"].default_value = roughness
     b.inputs["Metallic"].default_value = metallic
     b.inputs["Transmission Weight"].default_value = transmission
+    b.inputs["IOR"].default_value = ior
     return mat
 
 # =============================================
@@ -49,39 +33,33 @@ def make_mat(name, color, roughness=0.9, metallic=0.0, transmission=0.0):
 bpy.ops.mesh.primitive_plane_add(size=50, location=(0, 0, 0))
 terrain = bpy.context.active_object
 terrain.name = "Terrain"
-
 bpy.ops.object.mode_set(mode='EDIT')
 bpy.ops.mesh.subdivide(number_cuts=30)
 bpy.ops.object.mode_set(mode='OBJECT')
-
 displace = terrain.modifiers.new("Displace", 'DISPLACE')
 noise_tex = bpy.data.textures.new("TerrainNoise", type='CLOUDS')
 noise_tex.noise_scale = 3.0
 displace.texture = noise_tex
 displace.strength = 0.8
 bpy.ops.object.modifier_apply(modifier="Displace")
-
-# 젖은 흙 재질 (비 온 뒤라 약간 반사)
-wet_mat = make_mat("WetGround", (0.07, 0.16, 0.04, 1), roughness=0.55, metallic=0.0)
-terrain.data.materials.append(wet_mat)
+terrain.data.materials.append(
+    make_mat("WetGround", (0.07, 0.16, 0.04, 1), roughness=0.55)
+)
 
 # =============================================
-# 나무 생성
+# 나무 22그루
 # =============================================
 def make_tree(x, y, scale, seed):
     random.seed(seed)
     trunk_h = 2.8 * scale
     trunk_mat = make_mat(f"Trunk_{seed}", (0.18, 0.11, 0.04, 1))
-
     for i in range(5):
         seg_h = trunk_h / 5
         r = 0.13 * scale * (1 - i * 0.14)
         bpy.ops.mesh.primitive_cylinder_add(
             vertices=10, radius=r, depth=seg_h,
-            location=(x, y, i * seg_h + seg_h / 2)
-        )
+            location=(x, y, i * seg_h + seg_h / 2))
         bpy.context.active_object.data.materials.append(trunk_mat)
-
     branch_mat = make_mat(f"Branch_{seed}", (0.16, 0.09, 0.03, 1))
     for _ in range(random.randint(4, 6)):
         bz = trunk_h * random.uniform(0.35, 0.80)
@@ -93,13 +71,11 @@ def make_tree(x, y, scale, seed):
             vertices=6, radius=0.04 * scale, depth=bl,
             location=(x + math.sin(ra)*math.cos(rd)*bl*0.5,
                       y + math.sin(ra)*math.sin(rd)*bl*0.5,
-                      bz + math.cos(ra)*bl*0.5)
-        )
+                      bz + math.cos(ra)*bl*0.5))
         b = bpy.context.active_object
         b.rotation_euler[1] = ra
         b.rotation_euler[2] = rd
         b.data.materials.append(branch_mat)
-
     crown_base = trunk_h * 0.40
     for _ in range(random.randint(10, 16)):
         t = random.uniform(0, 1)
@@ -109,7 +85,7 @@ def make_tree(x, y, scale, seed):
         cy = y + sp * math.sin(math.radians(ag)) * random.uniform(0.2, 1.0)
         cz = crown_base + t * trunk_h * 0.75 + random.uniform(-0.15, 0.15) * scale
         cr = scale * random.uniform(0.28, 0.52)
-        g = random.uniform(0.18, 0.30)   # 비 온 날 - 어두운 초록
+        g = random.uniform(0.18, 0.30)
         lmat = make_mat(f"Leaf_{seed}_{_}", (0.04, g, 0.04, 1))
         bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=2, radius=cr, location=(cx, cy, cz))
         cl = bpy.context.active_object
@@ -126,53 +102,46 @@ for _ in range(22):
     make_tree(x, y, random.uniform(0.7, 1.8), random.randint(0, 9999))
 
 # =============================================
-# Genesis 비 파티클 → Blender 애니메이션
+# 비 - Curve 오브젝트 (보장된 렌더링)
+# 파티클 시뮬레이션 없이 직접 3D 빗줄기 생성
 # =============================================
-# 빗방울 템플릿 (길쭉한 물방울 형태)
-bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=0.04)
-drop_tmpl = bpy.context.active_object
-drop_tmpl.name = "RainDropTemplate"
-drop_tmpl.scale = (0.35, 0.35, 1.0)
-bpy.ops.object.transform_apply(scale=True)
-drop_tmpl.data.materials.append(
-    make_mat("DropMat", (0.5, 0.78, 1.0, 1), roughness=0.0, transmission=0.88)
-)
+random.seed(42)
+n_drops = 3500
 
-# 포인트 클라우드 메시 (버텍스 = 빗방울 위치)
-mesh = bpy.data.meshes.new("RainMesh")
-rain_obj = bpy.data.objects.new("RainCloud", mesh)
+curve_data = bpy.data.curves.new("RainCurve", type='CURVE')
+curve_data.dimensions = '3D'
+curve_data.bevel_depth = 0.005       # 빗방울 두께 5mm
+curve_data.bevel_resolution = 1      # 낮은 폴리곤 (성능)
+curve_data.use_fill_caps = True      # 양 끝 마감
+
+for i in range(n_drops):
+    x = random.uniform(-21, 21)
+    y = random.uniform(-21, 21)
+    z_top = random.uniform(0.8, 13.0)        # 지면 위 ~ 높은 곳까지 분포
+    length = random.uniform(0.20, 0.55)      # 빗줄기 길이
+    tilt_x = random.uniform(-0.04, 0.02)    # 바람에 의한 기울기 (왼쪽으로 약간)
+    tilt_y = random.uniform(-0.02, 0.02)
+
+    spline = curve_data.splines.new('POLY')
+    spline.points.add(1)                     # 2포인트 = 직선 빗줄기
+    spline.points[0].co = (x, y, z_top, 1)
+    spline.points[1].co = (x + tilt_x, y + tilt_y, z_top - length, 1)
+
+rain_obj = bpy.data.objects.new("Rain", curve_data)
 bpy.context.collection.objects.link(rain_obj)
 
-verts = [tuple(p) for p in rain[0]]
-mesh.from_pydata(verts, [], [])
-mesh.update()
+# 빗방울 재질 (반투명 파란빛 물)
+rain_mat = bpy.data.materials.new("RainMat")
+rain_mat.use_nodes = True
+bsdf = rain_mat.node_tree.nodes["Principled BSDF"]
+bsdf.inputs["Base Color"].default_value = (0.82, 0.92, 1.0, 1.0)
+bsdf.inputs["Roughness"].default_value = 0.03
+bsdf.inputs["Metallic"].default_value = 0.0
+bsdf.inputs["Transmission Weight"].default_value = 0.70
+bsdf.inputs["IOR"].default_value = 1.333
+rain_obj.data.materials.append(rain_mat)
 
-# 버텍스 인스턴싱 (빗방울 템플릿을 각 버텍스에 배치)
-rain_obj.instance_type = 'VERTS'
-rain_obj.show_instancer_for_render = False
-drop_tmpl.parent = rain_obj
-
-# Shape Key로 프레임별 위치 애니메이션
-rain_obj.shape_key_add(name="Basis")
-
-scene = bpy.context.scene
-scene.frame_start = 1
-scene.frame_end = n_frames
-
-print("Shape Key 애니메이션 생성 중...")
-for f in range(0, n_frames, 4):    # 4프레임마다 키프레임
-    sk = rain_obj.shape_key_add(name=f"F{f:03d}")
-    for i, p in enumerate(rain[f]):
-        sk.data[i].co = tuple(p)
-
-    scene.frame_set(f + 1)
-    for key in rain_obj.data.shape_keys.key_blocks[1:]:
-        key.value = 0.0
-        key.keyframe_insert("value")
-    sk.value = 1.0
-    sk.keyframe_insert("value")
-
-print("완료!")
+print(f"비 줄기 생성 완료: {n_drops}개")
 
 # =============================================
 # 하늘 (비 오는 날)
@@ -189,27 +158,26 @@ sky.sky_type = 'MULTIPLE_SCATTERING'
 sky.sun_elevation = math.radians(20)
 sky.sun_rotation = math.radians(100)
 sky.air_density = 1.0
-sky.aerosol_density = 4.0    # 빗날 - 습한 대기
+sky.aerosol_density = 4.0
 sky.ozone_density = 1.0
 
 bg = nodes.new("ShaderNodeBackground")
-bg.inputs["Strength"].default_value = 0.5   # 흐린 날
+bg.inputs["Strength"].default_value = 0.5
 out = nodes.new("ShaderNodeOutputWorld")
 links.new(sky.outputs["Color"], bg.inputs["Color"])
 links.new(bg.outputs["Background"], out.inputs["Surface"])
 
 # =============================================
-# 태양 (흐린 날)
+# 조명
 # =============================================
 bpy.ops.object.light_add(type='SUN', location=(0, 0, 10))
 sun = bpy.context.active_object
 sun.name = "Sun"
 sun.data.energy = 1.2
-sun.data.angle = math.radians(5)   # 확산광 (흐린 날)
+sun.data.angle = math.radians(5)
 sun.rotation_euler[0] = math.radians(70)
 sun.rotation_euler[2] = math.radians(100)
 
-# 전체적인 분위기를 위한 Area Light (하늘 빛 보완)
 bpy.ops.object.light_add(type='AREA', location=(0, 0, 15))
 sky_light = bpy.context.active_object
 sky_light.name = "SkyLight"
@@ -226,17 +194,24 @@ cam.name = "Camera"
 cam.rotation_euler[0] = math.radians(75)
 cam.rotation_euler[2] = math.radians(38)
 cam.data.lens = 35
-scene.camera = cam
+bpy.context.scene.camera = cam
 
 # =============================================
 # 렌더 설정
 # =============================================
+scene = bpy.context.scene
 scene.render.engine = 'CYCLES'
 scene.render.resolution_x = 1920
 scene.render.resolution_y = 1080
 scene.render.image_settings.file_format = 'PNG'
 scene.cycles.samples = 128
 scene.cycles.use_denoising = True
+scene.frame_start = 1
+scene.frame_end = 120
+
+# 모션 블러: 빗줄기를 더 사실적으로 (정적 씬이라도 Cycles motion blur 효과)
+scene.render.use_motion_blur = True
+scene.render.motion_blur_shutter = 0.5
 
 try:
     prefs = bpy.context.preferences.addons["cycles"].preferences
@@ -248,17 +223,15 @@ try:
 except:
     scene.cycles.device = 'CPU'
 
-# 비 내리는 장면 중간 프레임 렌더링
 output_path = r"C:\Users\kkjjy\Documents\WorldSim\output\rainy_forest.png"
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 scene.render.filepath = output_path
-scene.frame_set(50)   # 비가 한창 내리는 시점
+scene.frame_set(1)
 
 print("렌더링 시작...")
 bpy.ops.render.render(write_still=True)
 print(f"완료: {output_path}")
 
-# .blend 저장
 bpy.ops.wm.save_as_mainfile(
     filepath=r"C:\Users\kkjjy\Documents\WorldSim\rainy_forest.blend"
 )
