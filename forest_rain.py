@@ -1,8 +1,10 @@
 """
-WS_forest_rain v004
-Genesis SPH 물리 기반 비 애니메이션 + 연속 강우 루프
-개선: 오프셋 반반 전략으로 연속 강우 (파티클 절반씩 100프레임 오프셋)
-지면 스플래시 링, 웅덩이, 200프레임 PNG 시퀀스 출력
+WS_forest_rain v005
+v004 시각 결함 수정:
+1. 비가 흰 글로우 튜브처럼 보임 → bevel 10mm→4mm, emission 0.5→0.15, transmission ↑
+2. 웅덩이가 하늘을 반사해 하얗게 떠버림 → base color를 어두운 청록으로 낮춤
+3. 오프셋 반반 트릭이 100프레임 지점에서 파티클 점프 유발 → 단순 순차 재생으로 복귀
+4. 스플래시가 다이아몬드 Curve 윤곽선(와이어프레임)으로 보임 → 채워진 N-gon 원판 메쉬로 교체
 """
 import bpy
 import numpy as np
@@ -73,15 +75,17 @@ terrain.data.materials.append(
 )
 
 # =============================================
-# 웅덩이 (정적 물 고임 – 지면에 납작한 반사 원)
+# 웅덩이 (정적 물 고임 – 어두운 청록, 매트)
+# 진단 결과: 재질 자체는 정상이지만 반지름 0.4~1.4m가 카메라에서
+# 너무 작고 멀어 안티에일리어싱에 묻혀 안 보임 → 크기를 키움
 # =============================================
-puddle_mat = make_mat("Puddle", (0.55, 0.65, 0.80, 1), roughness=0.05,
-                      transmission=0.20, ior=1.333)
+puddle_mat = make_mat("Puddle", (0.03, 0.06, 0.08, 1), roughness=0.9,
+                      transmission=0.0, ior=1.333)
 random.seed(42)
-for _ in range(12):
-    px = random.uniform(-18, 18)
-    py = random.uniform(-18, 18)
-    r  = random.uniform(0.4, 1.4)
+for _ in range(8):
+    px = random.uniform(-14, 14)
+    py = random.uniform(-10, 10)
+    r  = random.uniform(1.4, 3.0)   # 0.4~1.4 → 1.4~3.0 (확실히 보이게)
     bpy.ops.mesh.primitive_circle_add(vertices=32, radius=r,
                                       fill_type='NGON', location=(px, py, 0.06))
     p = bpy.context.active_object
@@ -152,10 +156,10 @@ streak_len  = 0.40   # 빗줄기 길이 (m)
 wind_tilt   = 0.12   # 수평 기울기 비율 (풍각도)
 splash_max  = 300    # 동시 스플래시 링 최대 개수
 
-# ─── 비 Curve ───
+# ─── 비 Curve (얇고 투명한 빗줄기 – 글로우 튜브 아님) ───
 rain_curve = bpy.data.curves.new("WS_RainCurve", type='CURVE')
 rain_curve.dimensions    = '3D'
-rain_curve.bevel_depth   = 0.010   # 10mm
+rain_curve.bevel_depth   = 0.004   # 4mm (10mm → 대폭 축소)
 rain_curve.bevel_resolution = 1
 rain_curve.use_fill_caps = True
 
@@ -172,64 +176,58 @@ bpy.context.collection.objects.link(rain_obj)
 rain_mat = bpy.data.materials.new("WaterStreak")
 rain_mat.use_nodes = True
 b = rain_mat.node_tree.nodes["Principled BSDF"]
-b.inputs["Base Color"].default_value          = (0.85, 0.93, 1.0, 1.0)
-b.inputs["Roughness"].default_value           = 0.03
-b.inputs["Transmission Weight"].default_value = 0.55
+b.inputs["Base Color"].default_value          = (0.78, 0.87, 1.0, 1.0)
+b.inputs["Roughness"].default_value           = 0.05
+b.inputs["Transmission Weight"].default_value = 0.85   # 0.55 → 더 투명한 유리/물 느낌
 b.inputs["IOR"].default_value                = 1.333
-b.inputs["Emission Color"].default_value      = (0.85, 0.93, 1.0, 1.0)
-b.inputs["Emission Strength"].default_value   = 0.5
+b.inputs["Emission Color"].default_value      = (0.78, 0.87, 1.0, 1.0)
+b.inputs["Emission Strength"].default_value   = 0.15    # 0.5 → 글로우 대폭 약화
 rain_obj.data.materials.append(rain_mat)
 
-# ─── 스플래시 Curve (지면 충돌 링) ───
-# 다이아몬드형 4점 폴리 스플라인 → bevel → 작은 원호처럼 보임
-splash_curve = bpy.data.curves.new("WS_SplashCurve", type='CURVE')
-splash_curve.dimensions  = '3D'
-splash_curve.bevel_depth = 0.006
-splash_curve.bevel_resolution = 1
+# ─── 스플래시 (지면 충돌 – 채워진 원판 메쉬, Curve 윤곽선 아님) ───
+# 8각형 N-gon 면으로 채워진 작은 원판 → 실제 물방울 튀김처럼 보임
+splash_mesh = bpy.data.meshes.new("WS_SplashMesh")
+splash_verts = []
+splash_faces = []
+N_SIDES = 8
+for s in range(splash_max):
+    base_idx = len(splash_verts)
+    for k in range(N_SIDES):
+        ang = 2 * math.pi * k / N_SIDES
+        splash_verts.append((math.cos(ang) * 0.001, math.sin(ang) * 0.001, -100.0))
+    splash_faces.append(list(range(base_idx, base_idx + N_SIDES)))
+splash_mesh.from_pydata(splash_verts, [], splash_faces)
+splash_mesh.update()
 
-for i in range(splash_max):
-    sp = splash_curve.splines.new('POLY')
-    sp.points.add(3)
-    sp.use_cyclic_u = True
-    for j, (dx, dy) in enumerate([(1,0),(0,1),(-1,0),(0,-1)]):
-        sp.points[j].co = (dx * 0.001, dy * 0.001, -100.0, 1.0)  # 초기: 지하에 숨김
-
-splash_obj = bpy.data.objects.new("WS_Splash", splash_curve)
+splash_obj = bpy.data.objects.new("WS_Splash", splash_mesh)
 bpy.context.collection.objects.link(splash_obj)
 
 splash_mat = bpy.data.materials.new("SplashRing")
 splash_mat.use_nodes = True
 bs = splash_mat.node_tree.nodes["Principled BSDF"]
-bs.inputs["Base Color"].default_value          = (0.75, 0.88, 1.0, 1.0)
-bs.inputs["Roughness"].default_value           = 0.05
-bs.inputs["Emission Color"].default_value      = (0.75, 0.88, 1.0, 1.0)
-bs.inputs["Emission Strength"].default_value   = 0.6
+bs.inputs["Base Color"].default_value          = (0.40, 0.52, 0.62, 1.0)
+bs.inputs["Roughness"].default_value           = 0.6
+bs.inputs["Transmission Weight"].default_value = 0.0
+bs.inputs["Emission Color"].default_value      = (0.40, 0.52, 0.62, 1.0)
+bs.inputs["Emission Strength"].default_value   = 0.04
 splash_obj.data.materials.append(splash_mat)
 
 # ─── 프레임 핸들러 ───
-# 연속 강우 전략: 파티클 절반을 100프레임 오프셋으로 운용
-# → 한쪽이 지면 근처일 때 다른 쪽은 상공 → 항상 모든 높이에 비가 내림
-# → f % n_frames 로 루프 가능
+# 단순 재생: Genesis 프레임을 그대로 순서대로 표시 (점프/오프셋 없음)
 _rain_data   = rain
 _n_frames    = n_frames
 _n_rain      = n_rain
-_n_half      = n_rain // 2       # 절반씩 오프셋
-_offset      = n_frames // 2     # 100프레임 오프셋
 _slen        = streak_len
 _wtilt       = wind_tilt
 _rain_obj    = rain_obj
 _splash_obj  = splash_obj
 _splash_max  = splash_max
-_splash_r    = 1.2   # 스플래시 반지름 (Blender 단위)
+_splash_r    = 0.55  # 스플래시 반지름 (Blender 단위) – 0.9 → 0.55로 축소
+_n_sides     = N_SIDES
 
 def update_scene(scene):
-    f = (scene.frame_current - 1) % _n_frames   # 루프 지원
-
-    # 오프셋 반반: 앞 절반은 f, 뒤 절반은 (f + offset) % n_frames
-    f2 = (f + _offset) % _n_frames
-    pts1 = _rain_data[f][:_n_half]
-    pts2 = _rain_data[f2][_n_half:]
-    pts  = np.concatenate([pts1, pts2], axis=0)   # (n_rain, 3)
+    f = max(0, min(scene.frame_current - 1, _n_frames - 1))
+    pts = _rain_data[f]
 
     # 비 Curve 업데이트 (풍각도 포함)
     rain_splines = _rain_obj.data.splines
@@ -240,21 +238,22 @@ def update_scene(scene):
         rain_splines[i].points[1].co = (x - _wtilt * _slen,   y, z + _slen,   1.0)
     _rain_obj.data.update_tag()
 
-    # 스플래시 Curve 업데이트 (합쳐진 pts 기준, z < 35cm → 링)
-    near = pts[pts[:, 2] < 0.35]
-    splash_splines = _splash_obj.data.splines
-    ns = min(_splash_max, len(splash_splines))
+    # 스플래시 메쉬 업데이트: z < 30cm 파티클 위치에 채워진 원판 표시
+    near = pts[pts[:, 2] < 0.30]
+    verts = _splash_obj.data.vertices
+    ns = min(_splash_max, len(verts) // _n_sides)
     for i in range(ns):
+        base = i * _n_sides
         if i < len(near):
             x, y = near[i, 0], near[i, 1]
-            r = _splash_r
-            splash_splines[i].points[0].co = ( r+x,   y,  0.08, 1.0)
-            splash_splines[i].points[1].co = (  x,  r+y,  0.08, 1.0)
-            splash_splines[i].points[2].co = (-r+x,   y,  0.08, 1.0)
-            splash_splines[i].points[3].co = (  x, -r+y,  0.08, 1.0)
+            for k in range(_n_sides):
+                ang = 2 * math.pi * k / _n_sides
+                verts[base + k].co = (x + math.cos(ang) * _splash_r,
+                                       y + math.sin(ang) * _splash_r,
+                                       0.07)
         else:
-            for j in range(4):
-                splash_splines[i].points[j].co = (0, 0, -100.0, 1.0)
+            for k in range(_n_sides):
+                verts[base + k].co = (0, 0, -100.0)
     _splash_obj.data.update_tag()
 
 bpy.app.handlers.frame_change_post.append(update_scene)
@@ -337,11 +336,11 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v004_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v005_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
-print("프리뷰 렌더링 (프레임 60, 오프셋 반반 연속 강우)...")
+print("프리뷰 렌더링 (프레임 60, 시각 결함 수정판)...")
 bpy.ops.render.render(write_still=True)
 print(f"프리뷰 저장: {preview_path}")
 
@@ -349,13 +348,13 @@ print(f"프리뷰 저장: {preview_path}")
 # 200프레임 PNG 시퀀스 렌더링
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v004"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v005"
 os.makedirs(frame_dir, exist_ok=True)
 
-print(f"\n200프레임 애니메이션 렌더링 시작 (연속 강우 루프)...")
+print(f"\n200프레임 애니메이션 렌더링 시작 (단순 순차 재생)...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v004_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v005_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -367,6 +366,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v004.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v005.blend"
 )
-print("씬 저장: WS_forest_rain_v004.blend")
+print("씬 저장: WS_forest_rain_v005.blend")
