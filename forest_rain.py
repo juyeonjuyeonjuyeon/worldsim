@@ -1,10 +1,9 @@
 """
-WS_forest_rain v005
-v004 시각 결함 수정:
-1. 비가 흰 글로우 튜브처럼 보임 → bevel 10mm→4mm, emission 0.5→0.15, transmission ↑
-2. 웅덩이가 하늘을 반사해 하얗게 떠버림 → base color를 어두운 청록으로 낮춤
-3. 오프셋 반반 트릭이 100프레임 지점에서 파티클 점프 유발 → 단순 순차 재생으로 복귀
-4. 스플래시가 다이아몬드 Curve 윤곽선(와이어프레임)으로 보임 → 채워진 N-gon 원판 메쉬로 교체
+WS_forest_rain v006
+v005 기반 + 개별 위상 연속 강우:
+파티클마다 랜덤 위상을 부여해 시간 이동 (중력 낙하는 시간 이동에 불변 →
+"언제 떨어지기 시작했는지"만 다른 것은 물리적으로 동등). 동기화된 점프 없이
+무한 루프 가능. v005에서 확인된 "시간이 지나며 비가 옅어지는" 문제 해결.
 """
 import bpy
 import numpy as np
@@ -213,7 +212,16 @@ bs.inputs["Emission Strength"].default_value   = 0.04
 splash_obj.data.materials.append(splash_mat)
 
 # ─── 프레임 핸들러 ───
-# 단순 재생: Genesis 프레임을 그대로 순서대로 표시 (점프/오프셋 없음)
+# 연속 강우: 파티클마다 개별 랜덤 위상(phase)을 부여해 시간 이동
+# 중력 낙하는 시간 이동에 불변이므로, "언제 떨어지기 시작했는지"를
+# 파티클마다 다르게 주는 것은 실제로 각자 다른 순간에 낙하를 시작한
+# 빗방울들이 동시에 존재하는 것과 물리적으로 동등함.
+# v004의 반반 오프셋과 달리 5000개가 각자 다른 시점에 리셋되므로
+# 동기화된 점프가 보이지 않음 → 무한 루프 가능
+np.random.seed(123)
+_phase       = np.random.randint(0, n_frames, size=n_rain)
+_particle_ix = np.arange(n_rain)
+
 _rain_data   = rain
 _n_frames    = n_frames
 _n_rain      = n_rain
@@ -222,12 +230,13 @@ _wtilt       = wind_tilt
 _rain_obj    = rain_obj
 _splash_obj  = splash_obj
 _splash_max  = splash_max
-_splash_r    = 0.55  # 스플래시 반지름 (Blender 단위) – 0.9 → 0.55로 축소
+_splash_r    = 0.55
 _n_sides     = N_SIDES
 
 def update_scene(scene):
-    f = max(0, min(scene.frame_current - 1, _n_frames - 1))
-    pts = _rain_data[f]
+    f = (scene.frame_current - 1) % _n_frames   # 무한 루프
+    idx = (f + _phase) % _n_frames               # 파티클별 개별 시간 이동
+    pts = _rain_data[idx, _particle_ix, :]        # (n_rain, 3) 팬시 인덱싱
 
     # 비 Curve 업데이트 (풍각도 포함)
     rain_splines = _rain_obj.data.splines
@@ -336,7 +345,7 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v005_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v006_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
@@ -348,13 +357,13 @@ print(f"프리뷰 저장: {preview_path}")
 # 200프레임 PNG 시퀀스 렌더링
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v005"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v006"
 os.makedirs(frame_dir, exist_ok=True)
 
 print(f"\n200프레임 애니메이션 렌더링 시작 (단순 순차 재생)...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v005_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v006_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -366,6 +375,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v005.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v006.blend"
 )
-print("씬 저장: WS_forest_rain_v005.blend")
+print("씬 저장: WS_forest_rain_v006.blend")
