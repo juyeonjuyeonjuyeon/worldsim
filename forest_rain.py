@@ -1,16 +1,19 @@
 """
-WS_forest_rain v007
-v006 기반 + 비자연스러운 지점 수정 (Genesis 재시뮬레이션 불필요한 항목들):
-1. SPH 초기화 불안정 이상치 필터링 강화 (레이어별 기대 범위로 필터)
-2. 웅덩이를 실제 비 낙하 밀집 위치 기반으로 배치 (임의 배치 제거)
-3. 웅덩이/스플래시를 지형 raycast로 실제 지표 높이에 배치
-4. wind_tilt를 실제 프레임간 속도(Genesis 계산값)로 대체
-5. 스플래시 300개 제한 초과시 랜덤 샘플링 (인덱스 편향 제거)
-6. 스플래시 크기를 충돌 속도(낙하 속도) 기반으로 가변화
+WS_forest_rain v008
+v007 기반 + 시간적 인과관계 수정 (이전엔 손 안 댄 항목들):
+1. 웅덩이 동적 성장: 프레임 1엔 거의 없고 비가 쌓이며 점차 자람
+   (밀집도 기반 위치는 v007에서 이미 적용, 이번엔 "언제 생기는지" 수정)
+2. 지면 습윤도 시간 변화: 처음엔 마른 색 → 비가 내리며 점차 젖은 색으로
+   (정점색으로 저장한 공간적 분포 × 시간 램프(Value 노드) = 최종 습윤도)
+3. 웅덩이-빗방울 상호작용: 스플래시가 웅덩이의 "현재 자란 반지름" 안에
+   떨어지면 더 크게 그려 파문처럼 보이게 함 (정적/동적 요소 연결)
+
+v006/v007 기반: SPH 이상치 필터링, 데이터 기반 웅덩이 위치, 지형 raycast,
+실제 속도 기반 빗줄기 방향, 스플래시 랜덤샘플링/가변크기 모두 유지.
 
 ※ Genesis 재시뮬레이션이 필요한 항목(XY 스케일 왜곡 25x, mid/high 배치
-스플래시 없음, 개별 입자 순간이동)은 mujoco DLL이 애플리케이션 제어 정책에
-차단되어 이번엔 처리 못함 - 대화정리.md 참고
+스플래시 없음, 개별 입자 순간이동, 8.3초 유한반복)은 mujoco DLL이
+애플리케이션 제어 정책에 차단되어 여전히 미해결 - 대화정리.md 참고
 """
 import bpy
 import numpy as np
@@ -77,7 +80,7 @@ def make_mat(name, color, roughness=0.9, metallic=0.0, transmission=0.0, ior=1.4
     return mat
 
 # =============================================
-# 지형 (젖은 땅 – 더 짙고 반사)
+# 지형
 # =============================================
 bpy.ops.mesh.primitive_plane_add(size=50, location=(0, 0, 0))
 terrain = bpy.context.active_object
@@ -91,9 +94,93 @@ noise_tex.noise_scale = 3.0
 displace.texture = noise_tex
 displace.strength = 0.8
 bpy.ops.object.modifier_apply(modifier="Displace")
-terrain.data.materials.append(
-    make_mat("WetGround", (0.05, 0.13, 0.03, 1), roughness=0.40)
-)
+
+# ─── 비 낙하 밀집도 그리드 (지면 습윤 마스크 + 웅덩이 후보 산출에 공용) ───
+_landing_xy = []
+for _f in range(0, n_frames, 2):
+    _m = rain[_f, :, 2] < 0.3
+    if _m.any():
+        _landing_xy.append(rain[_f, _m, :2])
+_landing_xy = np.concatenate(_landing_xy, axis=0) if _landing_xy else np.zeros((0, 2))
+
+_DENS_BINS = 24
+if len(_landing_xy) > 0:
+    _density_grid, _dxe, _dye = np.histogram2d(
+        _landing_xy[:, 0], _landing_xy[:, 1], bins=_DENS_BINS,
+        range=[[-16, 16], [-12, 12]])
+    _density_norm = _density_grid / max(_density_grid.max(), 1.0)
+else:
+    _density_grid = np.zeros((_DENS_BINS, _DENS_BINS))
+    _density_norm = _density_grid
+    _dxe = np.linspace(-16, 16, _DENS_BINS + 1)
+    _dye = np.linspace(-12, 12, _DENS_BINS + 1)
+_dxc = 0.5 * (_dxe[:-1] + _dxe[1:])
+_dyc = 0.5 * (_dye[:-1] + _dye[1:])
+
+def density_at(x, y):
+    i = int(np.clip(np.searchsorted(_dxc, x), 0, _DENS_BINS - 1))
+    j = int(np.clip(np.searchsorted(_dyc, y), 0, _DENS_BINS - 1))
+    return _density_norm[i, j]
+
+# ─── 지면 습윤 마스크 (정점색): 비가 실제로 더 많이 떨어지는 곳일수록
+# 짙게 젖은 색이 되도록 공간적 분포를 정점색에 저장. 시간적 변화(처음엔
+# 안 젖어있다가 점차 젖어가는)는 셰이더의 Value 노드를 프레임 핸들러가
+# 갱신해서 표현 (공간 마스크 × 시간 램프 = 최종 습윤도)
+_wet_attr = terrain.data.color_attributes.new(name="WetnessMask", type='FLOAT_COLOR', domain='POINT')
+for v in terrain.data.vertices:
+    w = density_at(v.co.x, v.co.y)
+    _wet_attr.data[v.index].color = (w, w, w, 1.0)
+
+dry_color = (0.16, 0.24, 0.08, 1.0)   # 비 오기 전 마른 풀색
+wet_color = (0.05, 0.13, 0.03, 1.0)   # 흠뻑 젖은 색 (기존 WetGround 색)
+
+ground_mat = bpy.data.materials.new("WetGround")
+ground_mat.use_nodes = True
+_gnt = ground_mat.node_tree
+_gnodes, _glinks = _gnt.nodes, _gnt.links
+_gbsdf = _gnodes["Principled BSDF"]
+_gbsdf.inputs["Metallic"].default_value = 0.0
+
+_vcol = _gnodes.new("ShaderNodeVertexColor")
+_vcol.layer_name = "WetnessMask"
+_sep = _gnodes.new("ShaderNodeSeparateColor")
+_glinks.new(_vcol.outputs["Color"], _sep.inputs["Color"])
+
+# 밀집도 마스크에 최소 베이스라인 부여: 측정된 낙하 위치가 좁은 패치에
+# 몰려있어(스케일 왜곡 문제 #3과 연결) 마스크가 대부분 0이 됨 → 시간이
+# 다 지나도 대부분 지역이 마른 색으로 남는 부작용 방지. 밀도 낮은 곳도
+# 절반은 젖게, 밀도 높은 곳은 완전히 젖게.
+_densitymap = _gnodes.new("ShaderNodeMapRange")
+_densitymap.inputs["From Min"].default_value = 0.0
+_densitymap.inputs["From Max"].default_value = 1.0
+_densitymap.inputs["To Min"].default_value = 0.5
+_densitymap.inputs["To Max"].default_value = 1.0
+_glinks.new(_sep.outputs["Red"], _densitymap.inputs["Value"])
+
+ground_wetness_value = _gnodes.new("ShaderNodeValue")
+ground_wetness_value.outputs[0].default_value = 0.0   # 프레임 핸들러가 매 프레임 갱신
+ground_wetness_value.label = "GlobalWetnessRamp"
+
+_wmul = _gnodes.new("ShaderNodeMath")
+_wmul.operation = 'MULTIPLY'
+_glinks.new(_densitymap.outputs["Result"], _wmul.inputs[0])
+_glinks.new(ground_wetness_value.outputs[0], _wmul.inputs[1])
+
+_mixcol = _gnodes.new("ShaderNodeMixRGB")
+_mixcol.inputs["Color1"].default_value = dry_color
+_mixcol.inputs["Color2"].default_value = wet_color
+_glinks.new(_wmul.outputs[0], _mixcol.inputs["Fac"])
+_glinks.new(_mixcol.outputs["Color"], _gbsdf.inputs["Base Color"])
+
+_roughmap = _gnodes.new("ShaderNodeMapRange")
+_roughmap.inputs["From Min"].default_value = 0.0
+_roughmap.inputs["From Max"].default_value = 1.0
+_roughmap.inputs["To Min"].default_value = 0.85    # 마른 땅: 거침
+_roughmap.inputs["To Max"].default_value = 0.40    # 젖은 땅: 매끈
+_glinks.new(_wmul.outputs[0], _roughmap.inputs["Value"])
+_glinks.new(_roughmap.outputs["Result"], _gbsdf.inputs["Roughness"])
+
+terrain.data.materials.append(ground_mat)
 
 # =============================================
 # 지형 높이 조회 (raycast 1회 사전계산 → 그리드 보간)
@@ -125,54 +212,53 @@ def ground_height_vec(xs, ys):
     return _height_grid[ix, iy]
 
 # =============================================
-# 웅덩이 (정적 물 고임 – 어두운 청록, 매트)
-# 실제 비 낙하 데이터 기반 배치: 임의 위치가 아니라 200프레임 전체에서
-# z<0.3m(지면 근접)로 떨어진 위치의 2D 밀집도를 계산해 웅덩이 후보를 찾음.
-# 크기도 그 지점의 낙하 밀집도에 비례. 높이는 raycast로 실제 지형에 맞춤.
+# 웅덩이 (어두운 청록, 매트)
+# 실제 비 낙하 데이터 기반 배치: 위에서 계산한 밀집도 그리드(_density_grid)를
+# 재사용해 가장 비가 많이 떨어지는 지점을 웅덩이 후보로 산출.
+# 크기는 밀집도에 비례, 처음엔 거의 안 보이다 비가 쌓이며 점차 자람.
 # =============================================
 puddle_mat = make_mat("Puddle", (0.03, 0.06, 0.08, 1), roughness=0.9,
                       transmission=0.0, ior=1.333)
 
-_landing_xy = []
-for _f in range(0, n_frames, 2):
-    _m = rain[_f, :, 2] < 0.3
-    if _m.any():
-        _landing_xy.append(rain[_f, _m, :2])
-_landing_xy = np.concatenate(_landing_xy, axis=0) if _landing_xy else np.zeros((0, 2))
-
 n_puddles = 8
-if len(_landing_xy) > 0:
-    _H, _xe, _ye = np.histogram2d(_landing_xy[:, 0], _landing_xy[:, 1], bins=20,
-                                   range=[[-16, 16], [-12, 12]])
-    _xc = 0.5 * (_xe[:-1] + _xe[1:])
-    _yc = 0.5 * (_ye[:-1] + _ye[1:])
-    _order = np.argsort(_H.ravel())[::-1]
-    _min_sep = 3.0
-    _centers = []
-    for _flat in _order:
-        _i, _j = np.unravel_index(_flat, _H.shape)
-        if _H[_i, _j] <= 0:
-            break
-        _cx, _cy = _xc[_i], _yc[_j]
-        if all((_cx - px) ** 2 + (_cy - py) ** 2 > _min_sep ** 2 for px, py, _ in _centers):
-            _centers.append((_cx, _cy, _H[_i, _j]))
-        if len(_centers) >= n_puddles:
-            break
-    print(f"웅덩이 후보 {len(_centers)}개: 실제 낙하 밀집도 기반 산출 "
-          f"(최대 밀집도 {max(c[2] for c in _centers):.0f}회)")
-else:
-    _centers = []
+_order = np.argsort(_density_grid.ravel())[::-1]
+_min_sep = 3.0
+_centers = []
+for _flat in _order:
+    _i, _j = np.unravel_index(_flat, _density_grid.shape)
+    if _density_grid[_i, _j] <= 0:
+        break
+    _cx, _cy = _dxc[_i], _dyc[_j]
+    if all((_cx - px) ** 2 + (_cy - py) ** 2 > _min_sep ** 2 for px, py, _ in _centers):
+        _centers.append((_cx, _cy, _density_grid[_i, _j]))
+    if len(_centers) >= n_puddles:
+        break
+print(f"웅덩이 후보 {len(_centers)}개: 실제 낙하 밀집도 기반 산출 "
+      f"(최대 밀집도 {max((c[2] for c in _centers), default=0):.0f}회)")
 
 _max_density = max((c[2] for c in _centers), default=1.0)
+
+# 웅덩이를 동적으로 키우기 위해 단위원(반지름 1)으로 만들고 object.scale로
+# 매 프레임 크기를 조절 (transform_apply로 굳히지 않음). 처음엔 거의 안 보이게
+# 시작해서 비가 쌓이며 점차 자라남 (프레임 핸들러에서 갱신).
+puddle_objs    = []
+puddle_max_r   = []
+puddle_centers = []
 for px, py, density in _centers:
-    r = 1.2 + 1.8 * (density / _max_density)   # 밀집도에 비례 (1.2~3.0m)
+    r_max = 1.2 + 1.8 * (density / _max_density)   # 최종 크기 (밀집도에 비례)
     gz = ground_height(px, py)
-    bpy.ops.mesh.primitive_circle_add(vertices=32, radius=r,
+    bpy.ops.mesh.primitive_circle_add(vertices=32, radius=1.0,
                                       fill_type='NGON', location=(px, py, gz + 0.02))
     p = bpy.context.active_object
-    p.scale.z = 0.01   # 납작하게
-    bpy.ops.object.transform_apply(scale=True)
+    p.scale = (0.001, 0.001, 0.01)   # 시작 시 거의 안 보임
     p.data.materials.append(puddle_mat)
+    puddle_objs.append(p)
+    puddle_max_r.append(r_max)
+    puddle_centers.append((px, py))
+
+puddle_max_r   = np.array(puddle_max_r) if puddle_max_r else np.zeros(0)
+puddle_centers = np.array(puddle_centers) if puddle_centers else np.zeros((0, 2))
+puddle_wetness = np.zeros(len(puddle_objs))   # 0~1, 누적 상태 (프레임 핸들러가 갱신)
 
 # =============================================
 # 나무 22그루
@@ -313,6 +399,12 @@ _splash_max  = splash_max
 _n_sides     = N_SIDES
 _fallback_vel = np.array([0.0, 0.0, -0.02])   # 위상 wrap 순간의 속도 대체값
 
+# 웅덩이 동적 성장 + 지면 습윤 시간 변화 파라미터
+_PUDDLE_GROWTH = 0.15    # 근처 적중 1회당 wetness 증가량
+_PUDDLE_DECAY  = 0.004   # 적중 없을 때 자연 감소(증발/배수)
+_GROUND_RAMP_FRAMES = 60.0   # 지면이 마른 상태→완전히 젖는 데 걸리는 프레임 수
+_RIPPLE_BOOST  = 1.7     # 웅덩이 안에 떨어진 스플래시 크기 배율 (파문 효과)
+
 def update_scene(scene):
     f = (scene.frame_current - 1) % _n_frames     # 무한 루프
     idx = (f + _phase) % _n_frames                 # 파티클별 개별 시간 이동
@@ -353,6 +445,39 @@ def update_scene(scene):
         near_speed = near_speed[sel]
     radii = np.clip(0.3 + near_speed * 15.0, 0.3, 1.3)
     gz = ground_height_vec(near[:, 0], near[:, 1]) if len(near) else np.zeros(0)
+
+    # ── 웅덩이 동적 성장 + 빗방울-웅덩이 상호작용(파문) ──
+    # 성장 판정은 웅덩이의 "최종 크기"(puddle_max_r, 고정된 집수 영역) 기준으로
+    # 해야 함 — 현재 자란 크기를 기준으로 하면 처음에 반지름이 0이라 적중 판정이
+    # 절대 안 나서 영원히 안 자라는 닭-달걀 문제가 생김. 파문(시각 효과)만
+    # "현재 자란 반지름" 안에 떨어졌을 때 더 크게 그려서 인과관계를 표시.
+    n_pud = len(puddle_objs)
+    if n_pud > 0 and len(near) > 0:
+        dx = near[:, 0:1] - puddle_centers[:, 0][None, :]   # (n_near, n_pud)
+        dy = near[:, 1:2] - puddle_centers[:, 1][None, :]
+        dist2 = dx ** 2 + dy ** 2
+        inside_catchment = dist2 < (puddle_max_r[None, :] ** 2)   # 성장 판정 (고정 영역)
+        hits_per_puddle = inside_catchment.sum(axis=0)
+        cur_r = puddle_max_r * puddle_wetness                      # 현재 자란 반지름
+        inside_current = dist2 < (cur_r[None, :] ** 2)             # 파문 표시 판정
+        in_any_puddle = inside_current.any(axis=1)
+        radii[in_any_puddle] *= _RIPPLE_BOOST
+    elif n_pud > 0:
+        hits_per_puddle = np.zeros(n_pud)
+    else:
+        hits_per_puddle = np.zeros(0)
+
+    for pi in range(n_pud):
+        if hits_per_puddle[pi] > 0:
+            puddle_wetness[pi] = min(1.0, puddle_wetness[pi] + _PUDDLE_GROWTH * hits_per_puddle[pi])
+        else:
+            puddle_wetness[pi] = max(0.0, puddle_wetness[pi] - _PUDDLE_DECAY)
+        s = max(0.001, puddle_wetness[pi]) * puddle_max_r[pi]
+        puddle_objs[pi].scale = (s, s, 0.01)
+
+    # ── 지면 습윤도 시간 변화: 처음엔 마른 색 → 비가 쌓이며 점차 젖은 색 ──
+    elapsed = scene.frame_current   # 위상 루프와 무관한, 이 렌더 클립의 실제 경과 프레임
+    ground_wetness_value.outputs[0].default_value = min(1.0, elapsed / _GROUND_RAMP_FRAMES)
 
     verts = _splash_obj.data.vertices
     ns = min(_splash_max, len(verts) // _n_sides)
@@ -453,7 +578,7 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v007_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v008_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
@@ -465,13 +590,13 @@ print(f"프리뷰 저장: {preview_path}")
 # 200프레임 PNG 시퀀스 렌더링
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v007"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v008"
 os.makedirs(frame_dir, exist_ok=True)
 
 print(f"\n200프레임 애니메이션 렌더링 시작 (단순 순차 재생)...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v007_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v008_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -483,6 +608,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v007.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v008.blend"
 )
-print("씬 저장: WS_forest_rain_v007.blend")
+print("씬 저장: WS_forest_rain_v008.blend")
