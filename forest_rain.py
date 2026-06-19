@@ -1,9 +1,16 @@
 """
-WS_forest_rain v006
-v005 기반 + 개별 위상 연속 강우:
-파티클마다 랜덤 위상을 부여해 시간 이동 (중력 낙하는 시간 이동에 불변 →
-"언제 떨어지기 시작했는지"만 다른 것은 물리적으로 동등). 동기화된 점프 없이
-무한 루프 가능. v005에서 확인된 "시간이 지나며 비가 옅어지는" 문제 해결.
+WS_forest_rain v007
+v006 기반 + 비자연스러운 지점 수정 (Genesis 재시뮬레이션 불필요한 항목들):
+1. SPH 초기화 불안정 이상치 필터링 강화 (레이어별 기대 범위로 필터)
+2. 웅덩이를 실제 비 낙하 밀집 위치 기반으로 배치 (임의 배치 제거)
+3. 웅덩이/스플래시를 지형 raycast로 실제 지표 높이에 배치
+4. wind_tilt를 실제 프레임간 속도(Genesis 계산값)로 대체
+5. 스플래시 300개 제한 초과시 랜덤 샘플링 (인덱스 편향 제거)
+6. 스플래시 크기를 충돌 속도(낙하 속도) 기반으로 가변화
+
+※ Genesis 재시뮬레이션이 필요한 항목(XY 스케일 왜곡 25x, mid/high 배치
+스플래시 없음, 개별 입자 순간이동)은 mujoco DLL이 애플리케이션 제어 정책에
+차단되어 이번엔 처리 못함 - 대화정리.md 참고
 """
 import bpy
 import numpy as np
@@ -20,7 +27,22 @@ n_frames, n_total, _ = rain_raw.shape
 print(f"Genesis 데이터: {n_frames}프레임, {n_total}파티클")
 
 z0 = rain_raw[0, :, 2]
-valid_idx = np.where(z0 < 11.0)[0]
+
+# 이상치 필터링: genesis_rain.py의 3레이어(low=2m, mid=5m, high=8m, 두께 0.2m)
+# 기대 범위에서 크게 벗어난 입자 제거. SPH 초기 스텝의 입자 겹침으로 인한
+# 반발력 폭주(불안정)로 일부 입자가 박스 밖으로 튕겨나가는 현상이 npy 직접
+# 분석으로 확인됨 (레이어당 ~0.5% 이상치). 단순 z0<11 필터는 극단값만
+# 제거하므로, 레이어별 기대 범위(±0.5m 허용)로 더 엄격하게 필터링.
+n_per_layer = n_total // 3
+layer_centers = [2.0, 5.0, 8.0]
+tol = 0.5
+valid_mask = np.zeros(n_total, dtype=bool)
+for i, center in enumerate(layer_centers):
+    lo, hi = i * n_per_layer, (i + 1) * n_per_layer
+    valid_mask[lo:hi] = np.abs(z0[lo:hi] - center) < tol
+valid_idx = np.where(valid_mask)[0]
+print(f"이상치 필터링: {n_total}개 중 {len(valid_idx)}개 유효 "
+      f"(SPH 초기화 불안정 입자 {n_total - len(valid_idx)}개 제외)")
 
 n_rain = 5000   # 3500 → 5000 (더 촘촘한 비)
 sample_idx = np.linspace(0, len(valid_idx) - 1, n_rain, dtype=int)
@@ -74,19 +96,79 @@ terrain.data.materials.append(
 )
 
 # =============================================
+# 지형 높이 조회 (raycast 1회 사전계산 → 그리드 보간)
+# 웅덩이/스플래시가 평평한 고정 높이에 떠 있거나 묻히던 문제 해결:
+# Displace로 굴곡진 지형의 실제 표면 높이를 raycast로 얻어 배치에 사용
+# =============================================
+import mathutils
+_depsgraph = bpy.context.evaluated_depsgraph_get()
+_GRID_N = 48
+_gx = np.linspace(-16, 16, _GRID_N)
+_gy = np.linspace(-12, 12, _GRID_N)
+_height_grid = np.zeros((_GRID_N, _GRID_N))
+for _i, _x in enumerate(_gx):
+    for _j, _y in enumerate(_gy):
+        origin = mathutils.Vector((_x, _y, 50.0))
+        direction = mathutils.Vector((0.0, 0.0, -1.0))
+        ok, loc, nrm, idx, obj, mat = bpy.context.scene.ray_cast(_depsgraph, origin, direction)
+        _height_grid[_i, _j] = loc.z if ok else 0.0
+print(f"지형 높이 그리드 사전계산 완료 ({_GRID_N}x{_GRID_N})")
+
+def ground_height(x, y):
+    i = int(np.clip(np.searchsorted(_gx, x), 0, _GRID_N - 1))
+    j = int(np.clip(np.searchsorted(_gy, y), 0, _GRID_N - 1))
+    return _height_grid[i, j]
+
+def ground_height_vec(xs, ys):
+    ix = np.clip(np.searchsorted(_gx, xs), 0, _GRID_N - 1)
+    iy = np.clip(np.searchsorted(_gy, ys), 0, _GRID_N - 1)
+    return _height_grid[ix, iy]
+
+# =============================================
 # 웅덩이 (정적 물 고임 – 어두운 청록, 매트)
-# 진단 결과: 재질 자체는 정상이지만 반지름 0.4~1.4m가 카메라에서
-# 너무 작고 멀어 안티에일리어싱에 묻혀 안 보임 → 크기를 키움
+# 실제 비 낙하 데이터 기반 배치: 임의 위치가 아니라 200프레임 전체에서
+# z<0.3m(지면 근접)로 떨어진 위치의 2D 밀집도를 계산해 웅덩이 후보를 찾음.
+# 크기도 그 지점의 낙하 밀집도에 비례. 높이는 raycast로 실제 지형에 맞춤.
 # =============================================
 puddle_mat = make_mat("Puddle", (0.03, 0.06, 0.08, 1), roughness=0.9,
                       transmission=0.0, ior=1.333)
-random.seed(42)
-for _ in range(8):
-    px = random.uniform(-14, 14)
-    py = random.uniform(-10, 10)
-    r  = random.uniform(1.4, 3.0)   # 0.4~1.4 → 1.4~3.0 (확실히 보이게)
+
+_landing_xy = []
+for _f in range(0, n_frames, 2):
+    _m = rain[_f, :, 2] < 0.3
+    if _m.any():
+        _landing_xy.append(rain[_f, _m, :2])
+_landing_xy = np.concatenate(_landing_xy, axis=0) if _landing_xy else np.zeros((0, 2))
+
+n_puddles = 8
+if len(_landing_xy) > 0:
+    _H, _xe, _ye = np.histogram2d(_landing_xy[:, 0], _landing_xy[:, 1], bins=20,
+                                   range=[[-16, 16], [-12, 12]])
+    _xc = 0.5 * (_xe[:-1] + _xe[1:])
+    _yc = 0.5 * (_ye[:-1] + _ye[1:])
+    _order = np.argsort(_H.ravel())[::-1]
+    _min_sep = 3.0
+    _centers = []
+    for _flat in _order:
+        _i, _j = np.unravel_index(_flat, _H.shape)
+        if _H[_i, _j] <= 0:
+            break
+        _cx, _cy = _xc[_i], _yc[_j]
+        if all((_cx - px) ** 2 + (_cy - py) ** 2 > _min_sep ** 2 for px, py, _ in _centers):
+            _centers.append((_cx, _cy, _H[_i, _j]))
+        if len(_centers) >= n_puddles:
+            break
+    print(f"웅덩이 후보 {len(_centers)}개: 실제 낙하 밀집도 기반 산출 "
+          f"(최대 밀집도 {max(c[2] for c in _centers):.0f}회)")
+else:
+    _centers = []
+
+_max_density = max((c[2] for c in _centers), default=1.0)
+for px, py, density in _centers:
+    r = 1.2 + 1.8 * (density / _max_density)   # 밀집도에 비례 (1.2~3.0m)
+    gz = ground_height(px, py)
     bpy.ops.mesh.primitive_circle_add(vertices=32, radius=r,
-                                      fill_type='NGON', location=(px, py, 0.06))
+                                      fill_type='NGON', location=(px, py, gz + 0.02))
     p = bpy.context.active_object
     p.scale.z = 0.01   # 납작하게
     bpy.ops.object.transform_apply(scale=True)
@@ -152,8 +234,7 @@ for _ in range(22):
 # 핸들러에서 매 프레임 Genesis 위치 직접 기록
 # =============================================
 streak_len  = 0.40   # 빗줄기 길이 (m)
-wind_tilt   = 0.12   # 수평 기울기 비율 (풍각도)
-splash_max  = 300    # 동시 스플래시 링 최대 개수
+splash_max  = 300    # 동시 스플래시 슬롯 개수
 
 # ─── 비 Curve (얇고 투명한 빗줄기 – 글로우 튜브 아님) ───
 rain_curve = bpy.data.curves.new("WS_RainCurve", type='CURVE')
@@ -167,7 +248,7 @@ for i in range(n_rain):
     sp = rain_curve.splines.new('POLY')
     sp.points.add(1)
     sp.points[0].co = (x, y, z, 1.0)
-    sp.points[1].co = (x - wind_tilt * streak_len, y, z + streak_len, 1.0)
+    sp.points[1].co = (x, y, z + streak_len, 1.0)   # 초기값, 핸들러가 즉시 갱신
 
 rain_obj = bpy.data.objects.new("WS_Rain", rain_curve)
 bpy.context.collection.objects.link(rain_obj)
@@ -226,40 +307,67 @@ _rain_data   = rain
 _n_frames    = n_frames
 _n_rain      = n_rain
 _slen        = streak_len
-_wtilt       = wind_tilt
 _rain_obj    = rain_obj
 _splash_obj  = splash_obj
 _splash_max  = splash_max
-_splash_r    = 0.55
 _n_sides     = N_SIDES
+_fallback_vel = np.array([0.0, 0.0, -0.02])   # 위상 wrap 순간의 속도 대체값
 
 def update_scene(scene):
-    f = (scene.frame_current - 1) % _n_frames   # 무한 루프
-    idx = (f + _phase) % _n_frames               # 파티클별 개별 시간 이동
-    pts = _rain_data[idx, _particle_ix, :]        # (n_rain, 3) 팬시 인덱싱
+    f = (scene.frame_current - 1) % _n_frames     # 무한 루프
+    idx = (f + _phase) % _n_frames                 # 파티클별 개별 시간 이동
+    pts = _rain_data[idx, _particle_ix, :]          # (n_rain, 3) 팬시 인덱싱
 
-    # 비 Curve 업데이트 (풍각도 포함)
+    # 실제 Genesis 프레임간 속도(변위) – wind_tilt 같은 고정값 대신
+    # 진짜 계산된 속도로 빗줄기 방향을 결정 (물리적 근거 확보)
+    idx_prev = (idx - 1) % _n_frames
+    pts_prev = _rain_data[idx_prev, _particle_ix, :]
+    vel = pts - pts_prev
+    wrapped = (idx == 0)                # 위상 루프 경계: 속도가 깨지는 지점
+    vel[wrapped] = _fallback_vel
+    vel_norm = np.linalg.norm(vel, axis=1, keepdims=True)
+    vel_norm[vel_norm < 1e-6] = 1e-6
+    vel_dir = vel / vel_norm
+    tail = pts - vel_dir * _slen   # 빗줄기 꼬리 = 속도 반대 방향으로 streak_len만큼
+
+    # 비 Curve 업데이트
     rain_splines = _rain_obj.data.splines
     nr = min(_n_rain, len(rain_splines))
     for i in range(nr):
         x, y, z = pts[i]
-        rain_splines[i].points[0].co = (x,                    y, z,           1.0)
-        rain_splines[i].points[1].co = (x - _wtilt * _slen,   y, z + _slen,   1.0)
+        tx, ty, tz = tail[i]
+        rain_splines[i].points[0].co = (x,  y,  z,  1.0)
+        rain_splines[i].points[1].co = (tx, ty, tz, 1.0)
     _rain_obj.data.update_tag()
 
     # 스플래시 메쉬 업데이트: z < 30cm 파티클 위치에 채워진 원판 표시
-    near = pts[pts[:, 2] < 0.30]
+    # - 300개 초과시 랜덤 샘플링 (인덱스 순서 편향 제거)
+    # - 충돌 속도(수직 속도) 기반 가변 크기
+    # - 지형 raycast 높이 그리드로 실제 지표면에 배치
+    mask = pts[:, 2] < 0.30
+    near = pts[mask]
+    near_speed = np.abs(vel[mask, 2])
+    if len(near) > _splash_max:
+        sel = np.random.choice(len(near), _splash_max, replace=False)
+        near = near[sel]
+        near_speed = near_speed[sel]
+    radii = np.clip(0.3 + near_speed * 15.0, 0.3, 1.3)
+    gz = ground_height_vec(near[:, 0], near[:, 1]) if len(near) else np.zeros(0)
+
     verts = _splash_obj.data.vertices
     ns = min(_splash_max, len(verts) // _n_sides)
+    n_active = len(near)
     for i in range(ns):
         base = i * _n_sides
-        if i < len(near):
+        if i < n_active:
             x, y = near[i, 0], near[i, 1]
+            r = radii[i]
+            z = gz[i] + 0.02
             for k in range(_n_sides):
                 ang = 2 * math.pi * k / _n_sides
-                verts[base + k].co = (x + math.cos(ang) * _splash_r,
-                                       y + math.sin(ang) * _splash_r,
-                                       0.07)
+                verts[base + k].co = (x + math.cos(ang) * r,
+                                       y + math.sin(ang) * r,
+                                       z)
         else:
             for k in range(_n_sides):
                 verts[base + k].co = (0, 0, -100.0)
@@ -345,7 +453,7 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v006_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v007_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
@@ -357,13 +465,13 @@ print(f"프리뷰 저장: {preview_path}")
 # 200프레임 PNG 시퀀스 렌더링
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v006"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v007"
 os.makedirs(frame_dir, exist_ok=True)
 
 print(f"\n200프레임 애니메이션 렌더링 시작 (단순 순차 재생)...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v006_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v007_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -375,6 +483,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v006.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v007.blend"
 )
-print("씬 저장: WS_forest_rain_v006.blend")
+print("씬 저장: WS_forest_rain_v007.blend")
