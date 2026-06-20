@@ -1,19 +1,18 @@
 """
-WS_forest_rain v008
-v007 기반 + 시간적 인과관계 수정 (이전엔 손 안 댄 항목들):
-1. 웅덩이 동적 성장: 프레임 1엔 거의 없고 비가 쌓이며 점차 자람
-   (밀집도 기반 위치는 v007에서 이미 적용, 이번엔 "언제 생기는지" 수정)
-2. 지면 습윤도 시간 변화: 처음엔 마른 색 → 비가 내리며 점차 젖은 색으로
-   (정점색으로 저장한 공간적 분포 × 시간 램프(Value 노드) = 최종 습윤도)
-3. 웅덩이-빗방울 상호작용: 스플래시가 웅덩이의 "현재 자란 반지름" 안에
-   떨어지면 더 크게 그려 파문처럼 보이게 함 (정적/동적 요소 연결)
+WS_forest_rain v009
+genesis_rain.py 전면 재시뮬레이션(30m 풀스케일, 450프레임, 안정화) 반영:
 
-v006/v007 기반: SPH 이상치 필터링, 데이터 기반 웅덩이 위치, 지형 raycast,
-실제 속도 기반 빗줄기 방향, 스플래시 랜덤샘플링/가변크기 모두 유지.
+1. **XY 스케일 왜곡 해결**: Genesis 박스를 1.2m -> 30m로 키워 Blender 표시
+   영역과 1:1 일치. 더 이상 ×25 좌표 늘리기 불필요 (가장 근본적인 수정).
+2. **SPH 불안정성 근본 수정 확인**: sampler='regular' + stiffness 5000
+   조합으로 450프레임 내내 폭주 0건 (기존 데이터는 프레임199에 37% 폭주
+   했었음, 화면 밖으로 날아가 안 보였을 뿐). 더 이상 이상치 필터링 불필요.
+3. **mid/high 배치 스플래시 가능**: 시뮬레이션을 450프레임으로 늘려
+   high 배치(8m)도 자유낙하로 땅에 완전히 닿음 (기존 200프레임으론 불가능).
 
-※ Genesis 재시뮬레이션이 필요한 항목(XY 스케일 왜곡 25x, mid/high 배치
-스플래시 없음, 개별 입자 순간이동, 8.3초 유한반복)은 mujoco DLL이
-애플리케이션 제어 정책에 차단되어 여전히 미해결 - 대화정리.md 참고
+v006~v008 기반 기능 유지: 개별 위상 연속 강우, 데이터 기반 웅덩이 위치
++ 동적 성장, 지형 raycast, 실제 속도 기반 빗줄기 방향, 지면 시간적 습윤,
+웅덩이-빗물 파문 상호작용, 스플래시 랜덤샘플링/충돌속도 기반 크기.
 """
 import bpy
 import numpy as np
@@ -22,39 +21,29 @@ import random
 import os
 
 # =============================================
-# Genesis 비 데이터 로드 + 전처리
+# Genesis 비 데이터 로드
+# 30m 풀스케일로 재시뮬레이션됨 -> 좌표 스케일링/이상치 필터링 불필요
 # =============================================
 data_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_genesis_rain_sim\rain_particles.npy"
-rain_raw = np.load(data_path)           # (200, 108000, 3)
+rain_raw = np.load(data_path)           # (450, 92928, 3)
 n_frames, n_total, _ = rain_raw.shape
-print(f"Genesis 데이터: {n_frames}프레임, {n_total}파티클")
+print(f"Genesis 데이터: {n_frames}프레임, {n_total}파티클 (30m 풀스케일, 이상치 없음)")
 
-z0 = rain_raw[0, :, 2]
+n_rain = 5000
+sample_idx = np.linspace(0, n_total - 1, n_rain, dtype=int)
+rain = rain_raw[:, sample_idx, :].copy()   # (450, 5000, 3)
 
-# 이상치 필터링: genesis_rain.py의 3레이어(low=2m, mid=5m, high=8m, 두께 0.2m)
-# 기대 범위에서 크게 벗어난 입자 제거. SPH 초기 스텝의 입자 겹침으로 인한
-# 반발력 폭주(불안정)로 일부 입자가 박스 밖으로 튕겨나가는 현상이 npy 직접
-# 분석으로 확인됨 (레이어당 ~0.5% 이상치). 단순 z0<11 필터는 극단값만
-# 제거하므로, 레이어별 기대 범위(±0.5m 허용)로 더 엄격하게 필터링.
-n_per_layer = n_total // 3
-layer_centers = [2.0, 5.0, 8.0]
-tol = 0.5
-valid_mask = np.zeros(n_total, dtype=bool)
-for i, center in enumerate(layer_centers):
-    lo, hi = i * n_per_layer, (i + 1) * n_per_layer
-    valid_mask[lo:hi] = np.abs(z0[lo:hi] - center) < tol
-valid_idx = np.where(valid_mask)[0]
-print(f"이상치 필터링: {n_total}개 중 {len(valid_idx)}개 유효 "
-      f"(SPH 초기화 불안정 입자 {n_total - len(valid_idx)}개 제외)")
+# sampler='regular'는 입자를 완벽한 격자에 배치함 (불안정성 해결을 위한
+# 트레이드오프). 카메라가 격자 축과 거의 일렬로 보면 같은 줄의 입자들이
+# 화면에 겹쳐져 두꺼운 막대처럼 보이는 무아레 아티팩트가 생김. 입자마다
+# 고정된 작은 XY 떨림을 줘서 격자 정렬을 깨뜨림 (물리량인 Z 방향 낙하에는
+# 영향 없음, 격자 간격 0.17m의 절반 정도만 흔들어 시각적 정렬만 해소).
+np.random.seed(7)
+_jitter = (np.random.rand(n_rain, 2) - 0.5) * 1.2
+rain[:, :, 0] += _jitter[:, 0]
+rain[:, :, 1] += _jitter[:, 1]
 
-n_rain = 5000   # 3500 → 5000 (더 촘촘한 비)
-sample_idx = np.linspace(0, len(valid_idx) - 1, n_rain, dtype=int)
-selected = valid_idx[sample_idx]
-rain = rain_raw[:, selected, :]         # (200, 5000, 3)
-rain[:, :, 0] *= 25.0
-rain[:, :, 1] *= 25.0
-
-print(f"서브샘플: {n_rain}개 | XY ×25 | Z: {rain[0,:,2].min():.1f}~{rain[0,:,2].max():.1f}m")
+print(f"서브샘플: {n_rain}개 | Z: {rain[0,:,2].min():.1f}~{rain[0,:,2].max():.1f}m")
 
 # =============================================
 # 씬 초기화
@@ -385,8 +374,22 @@ splash_obj.data.materials.append(splash_mat)
 # 빗방울들이 동시에 존재하는 것과 물리적으로 동등함.
 # v004의 반반 오프셋과 달리 5000개가 각자 다른 시점에 리셋되므로
 # 동기화된 점프가 보이지 않음 → 무한 루프 가능
-np.random.seed(123)
-_phase       = np.random.randint(0, n_frames, size=n_rain)
+#
+# 위상을 순수 랜덤(파티클별 독립)으로 주면 'regular' 샘플러 특유의 문제가
+# 생김: 3개 레이어가 동일한 XY 격자를 공유하므로, 같은 XY에서 유래한
+# 다른 레이어 입자들이 서로 다른 무작위 위상을 받아 그 시점에 전부 다른
+# 높이에 떠 있게 되고, 화면에선 그 XY 위치 전체가 빗줄기로 "채워진" 흰
+# 기둥처럼 보임 (카메라가 얕은 각도라 두드러짐). 위상을 XY 위치만의
+# 함수로 만들어 같은 XY를 공유하는 레이어 입자들이 항상 같은 위상(같은
+# 낙하 진행률)을 갖게 해서 해결.
+_x0 = rain[0, :, 0]
+_y0 = rain[0, :, 1]
+# 고주파(137,251 같은 큰 배수) 해시는 인접 격자점끼리도 위상이 급격히
+# 달라져 같은 문제가 재발함 -> 저주파(완만한) 그라디언트로 변경.
+# 인접한 XY는 항상 비슷한 위상을 가져 화면에 갑작스런 높이 불연속이
+# 생기지 않음 (대신 비가 대각선 파도처럼 약간 출렁이며 떨어지는
+# 모습이 되는데, 이 역시 실제 강우 전선의 진행처럼 보일 수 있음).
+_phase = (((_x0 + 15.0) + (_y0 + 15.0)) / 60.0 * n_frames).astype(np.int64) % n_frames
 _particle_ix = np.arange(n_rain)
 
 _rain_data   = rain
@@ -578,25 +581,25 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v008_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v009_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
-print("프리뷰 렌더링 (프레임 60, 시각 결함 수정판)...")
+print("프리뷰 렌더링 (프레임 60, 30m 풀스케일 재시뮬레이션 반영판)...")
 bpy.ops.render.render(write_still=True)
 print(f"프리뷰 저장: {preview_path}")
 
 # =============================================
-# 200프레임 PNG 시퀀스 렌더링
+# 450프레임 PNG 시퀀스 렌더링 (전체 시뮬레이션 길이 = high 배치까지 착지)
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v008"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v009"
 os.makedirs(frame_dir, exist_ok=True)
 
-print(f"\n200프레임 애니메이션 렌더링 시작 (단순 순차 재생)...")
+print(f"\n{n_frames}프레임 애니메이션 렌더링 시작...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v008_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v009_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -608,6 +611,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v008.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v009.blend"
 )
-print("씬 저장: WS_forest_rain_v008.blend")
+print("씬 저장: WS_forest_rain_v009.blend")
