@@ -1,18 +1,27 @@
 """
-WS_forest_rain v009
-genesis_rain.py 전면 재시뮬레이션(30m 풀스케일, 450프레임, 안정화) 반영:
+WS_forest_rain v011
+근본적 재설계: Genesis SPH 시뮬레이션을 와이드샷 낙하에서 완전히 제거.
 
-1. **XY 스케일 왜곡 해결**: Genesis 박스를 1.2m -> 30m로 키워 Blender 표시
-   영역과 1:1 일치. 더 이상 ×25 좌표 늘리기 불필요 (가장 근본적인 수정).
-2. **SPH 불안정성 근본 수정 확인**: sampler='regular' + stiffness 5000
-   조합으로 450프레임 내내 폭주 0건 (기존 데이터는 프레임199에 37% 폭주
-   했었음, 화면 밖으로 날아가 안 보였을 뿐). 더 이상 이상치 필터링 불필요.
-3. **mid/high 배치 스플래시 가능**: 시뮬레이션을 450프레임으로 늘려
-   high 배치(8m)도 자유낙하로 땅에 완전히 닿음 (기존 200프레임으론 불가능).
+**왜 바꿨나**: SPH는 "입자들이 서로 압력으로 밀어내는 유체"를 계산하는
+도구인데, 실제로 떨어지는 빗방울들은 서로 유체역학적으로 상호작용하지
+않음 — 각자 중력+공기저항만 받는 독립된 투사체임. v009/v010에서
+SPH 안정성과 "진짜 입자간 상호작용"을 둘 다 잡으려 했지만(지터+stiffness
+조합 5가지 테스트), 상호작용이 거의 0인 안정 구간과 폭주 구간 사이에
+쓸 만한 중간지대가 없다는 걸 확인함. 근본 원인은 SPH로 푸는 문제 자체가
+틀렸다는 것 — 입자-입자 상호작용이 실제로 의미 있는 건 "충돌해서 튀는
+순간"(스플래시)뿐, 낙하 자체는 아님.
 
-v006~v008 기반 기능 유지: 개별 위상 연속 강우, 데이터 기반 웅덩이 위치
-+ 동적 성장, 지형 raycast, 실제 속도 기반 빗줄기 방향, 지면 시간적 습윤,
-웅덩이-빗물 파문 상호작용, 스플래시 랜덤샘플링/충돌속도 기반 크기.
+**새 방식**: 기상학의 실제 경험식 사용
+- 마샬-팔머(Marshall-Palmer) 빗방울 크기 분포: N(D)=N0·exp(-ΛD)
+- 건-킨저(Gunn-Kinzer) 종단속도 경험식(Atlas et al. 1973 근사):
+  v_t = 9.65 - 10.3·exp(-0.6D), D는 mm
+- 2차 공기저항 하의 낙하는 해석적으로 풀림: v(t)=v_t·tanh(gt/v_t),
+  떨어진 거리=  (v_t²/g)·ln(cosh(gt/v_t)) — SPH 없이 GPU 시뮬레이션
+  없이 numpy로 정확한 실제 물리값 계산. 큰 방울은 빠르게, 작은 방울은
+  느리게 떨어지는 다양성이 "위상 트릭" 없이 자연스럽게 생김.
+
+Genesis는 이제 클로즈업 스플래시(작은 영역, 빗방울 크기 입자)에만 사용
+예정 (별도 단계). 지형/나무/하늘/웅덩이/지면습윤 시스템은 유지.
 """
 import bpy
 import numpy as np
@@ -21,29 +30,53 @@ import random
 import os
 
 # =============================================
-# Genesis 비 데이터 로드
-# 30m 풀스케일로 재시뮬레이션됨 -> 좌표 스케일링/이상치 필터링 불필요
+# 빗방울 물리 속성 생성 (실제 기상학 경험식, Genesis/SPH 불필요)
 # =============================================
-data_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_genesis_rain_sim\rain_particles.npy"
-rain_raw = np.load(data_path)           # (450, 92928, 3)
-n_frames, n_total, _ = rain_raw.shape
-print(f"Genesis 데이터: {n_frames}프레임, {n_total}파티클 (30m 풀스케일, 이상치 없음)")
+G = 9.81   # 중력가속도 m/s^2
+
+RAIN_RATE_MM_HR = 20.0   # 강우강도 (보통~강한 비)
+LAMBDA = 4.1 * RAIN_RATE_MM_HR ** -0.21   # 마샬-팔머 분포 파라미터 (mm^-1)
 
 n_rain = 5000
-sample_idx = np.linspace(0, n_total - 1, n_rain, dtype=int)
-rain = rain_raw[:, sample_idx, :].copy()   # (450, 5000, 3)
+np.random.seed(42)
+_U = np.random.uniform(1e-6, 1.0, n_rain)
+diam_mm = np.clip(-np.log(_U) / LAMBDA, 0.4, 6.0)   # 빗방울 직경(mm), 실측 범위로 클립
+v_terminal = 9.65 - 10.3 * np.exp(-0.6 * diam_mm)    # 건-킨저 종단속도(m/s)
 
-# sampler='regular'는 입자를 완벽한 격자에 배치함 (불안정성 해결을 위한
-# 트레이드오프). 카메라가 격자 축과 거의 일렬로 보면 같은 줄의 입자들이
-# 화면에 겹쳐져 두꺼운 막대처럼 보이는 무아레 아티팩트가 생김. 입자마다
-# 고정된 작은 XY 떨림을 줘서 격자 정렬을 깨뜨림 (물리량인 Z 방향 낙하에는
-# 영향 없음, 격자 간격 0.17m의 절반 정도만 흔들어 시각적 정렬만 해소).
-np.random.seed(7)
-_jitter = (np.random.rand(n_rain, 2) - 0.5) * 1.2
-rain[:, :, 0] += _jitter[:, 0]
-rain[:, :, 1] += _jitter[:, 1]
+FIELD_HALF = 15.0
+START_HEIGHT = 9.0   # 빗방울이 화면에 나타나기 시작하는 높이(m)
 
-print(f"서브샘플: {n_rain}개 | Z: {rain[0,:,2].min():.1f}~{rain[0,:,2].max():.1f}m")
+# 순수 균등 난수로 XY를 뽑으면 통계적으로 우연한 클러스터가 생김
+# (직접 확인: 반경 0.4m 안 평균 2.8개여야 할 입자가 실제로 11개 뭉친 곳 발견 ->
+# 카메라가 얕은 각도라 그 위치의 여러 높이 빗방울들이 겹쳐 보여 흰 막대처럼
+# 보이는 v009와 동일한 원인의 아티팩트 재발). 지터드 그리드(각 셀에 정확히
+# 1개, 셀 내부에서만 무작위)로 바꿔 최소 간격을 보장 -> 군집 원천 차단,
+# 그러면서도 완벽한 격자가 아니라 시각적으로 자연스러움.
+_grid_n = int(np.ceil(np.sqrt(n_rain)))
+_cell = (2 * FIELD_HALF) / _grid_n
+_gi, _gj = np.meshgrid(np.arange(_grid_n), np.arange(_grid_n), indexing='ij')
+_gi = _gi.ravel()[:n_rain]
+_gj = _gj.ravel()[:n_rain]
+np.random.seed(43)
+x0 = -FIELD_HALF + (_gi + np.random.uniform(0.1, 0.9, n_rain)) * _cell
+y0 = -FIELD_HALF + (_gj + np.random.uniform(0.1, 0.9, n_rain)) * _cell
+
+print(f"빗방울 {n_rain}개 생성 (강우강도 {RAIN_RATE_MM_HR}mm/hr)")
+print(f"직경: {diam_mm.min():.1f}~{diam_mm.max():.1f}mm | "
+      f"종단속도: {v_terminal.min():.1f}~{v_terminal.max():.1f}m/s")
+
+def fall_distance(t, vt):
+    """2차 공기저항 하 t초 동안 낙하한 거리 (해석적 정확해)"""
+    return (vt ** 2 / G) * np.log(np.cosh(G * t / vt))
+
+def fall_velocity(t, vt):
+    """t초 시점의 속도 (해석적 정확해, t->inf 에서 vt로 수렴)"""
+    return vt * np.tanh(G * t / vt)
+
+def fall_duration(h, vt):
+    """높이 h를 낙하하는 데 걸리는 시간 (위 공식의 역함수, 폐형 해)"""
+    A = np.exp(np.clip(h * G / vt ** 2, 0, 80))   # exp 오버플로 방지
+    return (vt / G) * np.log(A + np.sqrt(np.maximum(A ** 2 - 1, 0)))
 
 # =============================================
 # 씬 초기화
@@ -85,12 +118,9 @@ displace.strength = 0.8
 bpy.ops.object.modifier_apply(modifier="Displace")
 
 # ─── 비 낙하 밀집도 그리드 (지면 습윤 마스크 + 웅덩이 후보 산출에 공용) ───
-_landing_xy = []
-for _f in range(0, n_frames, 2):
-    _m = rain[_f, :, 2] < 0.3
-    if _m.any():
-        _landing_xy.append(rain[_f, _m, :2])
-_landing_xy = np.concatenate(_landing_xy, axis=0) if _landing_xy else np.zeros((0, 2))
+# 새 모델은 빗방울이 수직으로만 낙하(횡방향 힘 없음)하므로 착지 위치가
+# 곧 출발 위치(x0,y0)와 같음 — 시계열 스캔 없이 바로 밀집도 계산 가능.
+_landing_xy = np.stack([x0, y0], axis=1)
 
 _DENS_BINS = 24
 if len(_landing_xy) > 0:
@@ -199,6 +229,19 @@ def ground_height_vec(xs, ys):
     ix = np.clip(np.searchsorted(_gx, xs), 0, _GRID_N - 1)
     iy = np.clip(np.searchsorted(_gy, ys), 0, _GRID_N - 1)
     return _height_grid[ix, iy]
+
+# ─── 빗방울별 낙하시간 계산 (지형 굴곡 반영, 해석적 정확해) ───
+ground_z = ground_height_vec(x0, y0)
+drop_height = START_HEIGHT - ground_z
+fall_dur = fall_duration(drop_height, v_terminal)
+print(f"낙하시간: {fall_dur.min():.2f}~{fall_dur.max():.2f}s "
+      f"(작은 방울일수록 느리게 떨어져 오래 걸림)")
+
+# 연속 강우 순환 주기: 가장 느린 방울이 다 떨어지는 시간 + 여유
+CYCLE_SEC = float(fall_dur.max()) * 1.15
+FPS = 24.0
+np.random.seed(99)
+drop_phase = np.random.uniform(0, CYCLE_SEC, n_rain)   # 각 방울의 독립적 시작 시각
 
 # =============================================
 # 웅덩이 (어두운 청록, 매트)
@@ -319,11 +362,10 @@ rain_curve.bevel_resolution = 1
 rain_curve.use_fill_caps = True
 
 for i in range(n_rain):
-    x, y, z = rain[0, i]
     sp = rain_curve.splines.new('POLY')
     sp.points.add(1)
-    sp.points[0].co = (x, y, z, 1.0)
-    sp.points[1].co = (x, y, z + streak_len, 1.0)   # 초기값, 핸들러가 즉시 갱신
+    sp.points[0].co = (x0[i], y0[i], START_HEIGHT, 1.0)
+    sp.points[1].co = (x0[i], y0[i], START_HEIGHT + streak_len, 1.0)   # 초기값, 핸들러가 즉시 갱신
 
 rain_obj = bpy.data.objects.new("WS_Rain", rain_curve)
 bpy.context.collection.objects.link(rain_obj)
@@ -368,85 +410,63 @@ bs.inputs["Emission Strength"].default_value   = 0.04
 splash_obj.data.materials.append(splash_mat)
 
 # ─── 프레임 핸들러 ───
-# 연속 강우: 파티클마다 개별 랜덤 위상(phase)을 부여해 시간 이동
-# 중력 낙하는 시간 이동에 불변이므로, "언제 떨어지기 시작했는지"를
-# 파티클마다 다르게 주는 것은 실제로 각자 다른 순간에 낙하를 시작한
-# 빗방울들이 동시에 존재하는 것과 물리적으로 동등함.
-# v004의 반반 오프셋과 달리 5000개가 각자 다른 시점에 리셋되므로
-# 동기화된 점프가 보이지 않음 → 무한 루프 가능
-#
-# 위상을 순수 랜덤(파티클별 독립)으로 주면 'regular' 샘플러 특유의 문제가
-# 생김: 3개 레이어가 동일한 XY 격자를 공유하므로, 같은 XY에서 유래한
-# 다른 레이어 입자들이 서로 다른 무작위 위상을 받아 그 시점에 전부 다른
-# 높이에 떠 있게 되고, 화면에선 그 XY 위치 전체가 빗줄기로 "채워진" 흰
-# 기둥처럼 보임 (카메라가 얕은 각도라 두드러짐). 위상을 XY 위치만의
-# 함수로 만들어 같은 XY를 공유하는 레이어 입자들이 항상 같은 위상(같은
-# 낙하 진행률)을 갖게 해서 해결.
-_x0 = rain[0, :, 0]
-_y0 = rain[0, :, 1]
-# 고주파(137,251 같은 큰 배수) 해시는 인접 격자점끼리도 위상이 급격히
-# 달라져 같은 문제가 재발함 -> 저주파(완만한) 그라디언트로 변경.
-# 인접한 XY는 항상 비슷한 위상을 가져 화면에 갑작스런 높이 불연속이
-# 생기지 않음 (대신 비가 대각선 파도처럼 약간 출렁이며 떨어지는
-# 모습이 되는데, 이 역시 실제 강우 전선의 진행처럼 보일 수 있음).
-_phase = (((_x0 + 15.0) + (_y0 + 15.0)) / 60.0 * n_frames).astype(np.int64) % n_frames
-_particle_ix = np.arange(n_rain)
-
-_rain_data   = rain
-_n_frames    = n_frames
-_n_rain      = n_rain
-_slen        = streak_len
+# 연속 강우: 각 빗방울이 실제로 독립된 순간(drop_phase)에 낙하를 "시작"함.
+# 이건 더 이상 시각적 트릭이 아니라 진짜 기상학적 사실 그대로임 — 실제
+# 빗방울들도 다 같은 시각에 한꺼번에 응결되어 떨어지는 게 아니라 각자
+# 다른 순간에 구름에서 떨어지기 시작함. CYCLE_SEC 주기로 무한 반복되고,
+# 큰 방울은 빠르게(짧은 fall_dur), 작은 방울은 느리게(긴 fall_dur)
+# 떨어지는 진짜 물리적 다양성이 자연 발생함 (위상 트릭으로 흉내낸 게 아님).
 _rain_obj    = rain_obj
 _splash_obj  = splash_obj
 _splash_max  = splash_max
 _n_sides     = N_SIDES
-_fallback_vel = np.array([0.0, 0.0, -0.02])   # 위상 wrap 순간의 속도 대체값
+_slen        = streak_len
+_SPLASH_WINDOW = 0.15   # 착지 후 스플래시가 보이는 시간(초)
 
 # 웅덩이 동적 성장 + 지면 습윤 시간 변화 파라미터
 _PUDDLE_GROWTH = 0.15    # 근처 적중 1회당 wetness 증가량
 _PUDDLE_DECAY  = 0.004   # 적중 없을 때 자연 감소(증발/배수)
 _GROUND_RAMP_FRAMES = 60.0   # 지면이 마른 상태→완전히 젖는 데 걸리는 프레임 수
-_RIPPLE_BOOST  = 1.7     # 웅덩이 안에 떨어진 스플래시 크기 배율 (파문 효과)
+_RIPPLE_BOOST  = 2.5     # 웅덩이 안에 떨어진 스플래시 크기 배율
 
 def update_scene(scene):
-    f = (scene.frame_current - 1) % _n_frames     # 무한 루프
-    idx = (f + _phase) % _n_frames                 # 파티클별 개별 시간 이동
-    pts = _rain_data[idx, _particle_ix, :]          # (n_rain, 3) 팬시 인덱싱
+    t = (scene.frame_current - 1) / FPS          # 렌더 경과 시간(초), 무한 루프 없이 그대로 증가
+    local_t = (t + drop_phase) % CYCLE_SEC        # 빗방울별 독립 주기 (실제 기상학적 다양성)
 
-    # 실제 Genesis 프레임간 속도(변위) – wind_tilt 같은 고정값 대신
-    # 진짜 계산된 속도로 빗줄기 방향을 결정 (물리적 근거 확보)
-    idx_prev = (idx - 1) % _n_frames
-    pts_prev = _rain_data[idx_prev, _particle_ix, :]
-    vel = pts - pts_prev
-    wrapped = (idx == 0)                # 위상 루프 경계: 속도가 깨지는 지점
-    vel[wrapped] = _fallback_vel
-    vel_norm = np.linalg.norm(vel, axis=1, keepdims=True)
-    vel_norm[vel_norm < 1e-6] = 1e-6
-    vel_dir = vel / vel_norm
-    tail = pts - vel_dir * _slen   # 빗줄기 꼬리 = 속도 반대 방향으로 streak_len만큼
+    falling = local_t < fall_dur
+    fallen = fall_distance(np.where(falling, local_t, fall_dur), v_terminal)
+    z = np.where(falling, START_HEIGHT - fallen, ground_z)
+    speed = np.where(falling, fall_velocity(np.where(falling, local_t, fall_dur), v_terminal), 0.0)
 
-    # 비 Curve 업데이트
+    # 빗줄기 꼬리: 순수 수직 낙하(바람 없음)이므로 꼬리는 항상 위쪽,
+    # 길이는 속도에 비례해 늘어남(빠른 방울일수록 길게 - 모션블러 대신
+    # 실제 속도 기반 시각적 신호)
+    vis_len = np.clip(_slen * (speed / 4.0), _slen * 0.3, _slen * 2.0)
+    tail_z = z + vis_len
+
+    # 비 Curve 업데이트: 떨어지는 중인 방울만 보이고, 착지한 방울은 숨김
     rain_splines = _rain_obj.data.splines
-    nr = min(_n_rain, len(rain_splines))
+    nr = min(n_rain, len(rain_splines))
     for i in range(nr):
-        x, y, z = pts[i]
-        tx, ty, tz = tail[i]
-        rain_splines[i].points[0].co = (x,  y,  z,  1.0)
-        rain_splines[i].points[1].co = (tx, ty, tz, 1.0)
+        if falling[i]:
+            rain_splines[i].points[0].co = (x0[i], y0[i], z[i], 1.0)
+            rain_splines[i].points[1].co = (x0[i], y0[i], tail_z[i], 1.0)
+        else:
+            rain_splines[i].points[0].co = (0, 0, -100.0, 1.0)
+            rain_splines[i].points[1].co = (0, 0, -100.0, 1.0)
     _rain_obj.data.update_tag()
 
-    # 스플래시 메쉬 업데이트: z < 30cm 파티클 위치에 채워진 원판 표시
-    # - 300개 초과시 랜덤 샘플링 (인덱스 순서 편향 제거)
-    # - 충돌 속도(수직 속도) 기반 가변 크기
-    # - 지형 raycast 높이 그리드로 실제 지표면에 배치
-    mask = pts[:, 2] < 0.30
-    near = pts[mask]
-    near_speed = np.abs(vel[mask, 2])
+    # 스플래시: 착지 직후(_SPLASH_WINDOW초) 동안만 표시, 충돌속도(=종단속도)
+    # 기반 크기 — 실제 운동량에 비례하는 진짜 물리값
+    since_landing = local_t - fall_dur
+    splashing = (since_landing >= 0) & (since_landing < _SPLASH_WINDOW)
+    near = np.stack([x0[splashing], y0[splashing], z[splashing]], axis=1)
+    near_speed = v_terminal[splashing]
     if len(near) > _splash_max:
         sel = np.random.choice(len(near), _splash_max, replace=False)
         near = near[sel]
         near_speed = near_speed[sel]
-    radii = np.clip(0.3 + near_speed * 15.0, 0.3, 1.3)
+    radii = np.clip(0.3 + near_speed * 0.12, 0.3, 1.3)
     gz = ground_height_vec(near[:, 0], near[:, 1]) if len(near) else np.zeros(0)
 
     # ── 웅덩이 동적 성장 + 빗방울-웅덩이 상호작용(파문) ──
@@ -502,6 +522,10 @@ def update_scene(scene):
     _splash_obj.data.update_tag()
 
 bpy.app.handlers.frame_change_post.append(update_scene)
+
+# 더 이상 시뮬레이션 길이에 묶이지 않음 (분석적 물리 계산, 길이 제약 없음).
+# CYCLE_SEC 안에서 빗방울들이 자연스럽게 순환하므로 임의 길이로 렌더 가능.
+n_frames = int(CYCLE_SEC * FPS)   # 한 순환 주기 전체를 렌더 (루프 길이와 일치)
 
 scene = bpy.context.scene
 scene.frame_start = 1
@@ -581,7 +605,7 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v009_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v011_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
@@ -593,13 +617,13 @@ print(f"프리뷰 저장: {preview_path}")
 # 450프레임 PNG 시퀀스 렌더링 (전체 시뮬레이션 길이 = high 배치까지 착지)
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v009"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v011"
 os.makedirs(frame_dir, exist_ok=True)
 
 print(f"\n{n_frames}프레임 애니메이션 렌더링 시작...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v009_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v011_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -611,6 +635,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v009.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v011.blend"
 )
-print("씬 저장: WS_forest_rain_v009.blend")
+print("씬 저장: WS_forest_rain_v011.blend")
