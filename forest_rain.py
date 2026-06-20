@@ -1,5 +1,18 @@
 """
-WS_forest_rain v012
+WS_forest_rain v013
+사용자 피드백: "하늘도 어색해" 수정.
+
+원인: 카메라가 X=75°(거의 수직으로 아래)라 하늘이 화면 위쪽 2~3%만
+보이고 나머지는 전부 땅이었음 — 그래서 "하늘"이라 생각했던 화면 중간의
+청회색 영역은 실제로는 나무/웅덩이가 섞인 먼 지면이었음(픽셀 직접 확인).
+35mm 렌즈의 수직 시야각(~32°)을 계산해 하늘:땅이 대략 1:2(삼분할법)가
+되도록 카메라를 X=84°로 조정 + 위치도 살짜 높이고 뒤로 빼서 전경 나무가
+너무 작아지지 않게 보완. 지평선도 800m 평면으로 확장(50m 지형 끝에서
+하늘로 칼같이 끊기던 문제), 볼류메트릭 구름(노이즈 밀도 + 실제 광 산란)
+추가 — 처음엔 얇게(4m) 만들어서 얕은 각도에서 단단한 천장처럼 보이는
+부작용이 있었음 -> 두껍게(16m) + 밀도 낮춰서 입체적인 구름 질감으로 해결.
+
+v012 기반 유지 (아래) + 위 카메라/지평선/구름 개선:
 사용자 피드백: "웅덩이가 평평한 색만 있는 도형이라 물처럼 안 보임,
 지형의 파인 부분에 맞게 채워진 게 아니라 판떼기 같다" 수정.
 
@@ -126,6 +139,16 @@ noise_tex.noise_scale = 3.0
 displace.texture = noise_tex
 displace.strength = 0.8
 bpy.ops.object.modifier_apply(modifier="Displace")
+
+# ─── 지평선 확장 ───
+# 디테일 지형이 50m 평면이라 그 끝에서 하늘로 칼같이 끊겨 "무대 배경판"
+# 처럼 보임. 훨씬 큰 단순 평면을 살짝 아래에 깔아 시야 끝까지 땅이
+# 이어지는 것처럼 보이게 함 (디테일/웅덩이 없는 먼 배경용, 가벼움).
+bpy.ops.mesh.primitive_plane_add(size=800, location=(0, 0, -0.05))
+horizon_ground = bpy.context.active_object
+horizon_ground.name = "HorizonGround"
+horizon_ground.data.materials.append(
+    make_mat("HorizonGround", (0.09, 0.16, 0.07, 1), roughness=0.6))
 
 # ─── 비 낙하 밀집도 그리드 (지면 습윤 마스크 + 웅덩이 후보 산출에 공용) ───
 # 새 모델은 빗방울이 수직으로만 낙하(횡방향 힘 없음)하므로 착지 위치가
@@ -638,11 +661,63 @@ sl.data.size   = 20
 sl.data.color  = (0.60, 0.72, 1.0)
 
 # =============================================
-# 카메라
+# 볼류메트릭 구름
+# 하늘이 매끈한 그라디언트뿐이라 "색칠한 배경판"처럼 보이는 문제 수정.
+# 그림(텍스처) 트릭이 아니라 실제 부피 산란 — 노이즈로 밀도를 준 볼륨에
+# 태양빛이 실제로 통과하며 산란/흡수되는 광학 시뮬레이션 (Cycles가
+# 진짜로 광선을 볼륨 안에서 마칭하며 계산함).
 # =============================================
-bpy.ops.object.camera_add(location=(10, -13, 5))
+bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 20))
+cloud_obj = bpy.context.active_object
+cloud_obj.name = "CloudLayer"
+cloud_obj.scale = (140, 140, 16)   # 4 -> 16: 얇은 층을 얕은 각도로 보면 단단한
+                                    # 천장처럼 보이는 문제 -> 두껍게 해서 입체감
+bpy.ops.object.transform_apply(scale=True)
+
+cloud_mat = bpy.data.materials.new("CloudVolume")
+cloud_mat.use_nodes = True
+_cnodes = cloud_mat.node_tree.nodes
+_clinks = cloud_mat.node_tree.links
+for n in list(_cnodes): _cnodes.remove(n)
+
+_ctex = _cnodes.new("ShaderNodeTexNoise")
+_ctex.inputs["Scale"].default_value = 2.5
+_ctex.inputs["Detail"].default_value = 4.0
+
+_cmap = _cnodes.new("ShaderNodeMapRange")
+_cmap.inputs["From Min"].default_value = 0.35
+_cmap.inputs["From Max"].default_value = 0.65
+_cmap.inputs["To Min"].default_value = 0.0
+_cmap.inputs["To Max"].default_value = 1.0
+_cmap.clamp = True
+
+_cvol = _cnodes.new("ShaderNodeVolumePrincipled")
+_cvol.inputs["Color"].default_value = (0.75, 0.76, 0.78, 1.0)
+
+_cmul = _cnodes.new("ShaderNodeMath")
+_cmul.operation = 'MULTIPLY'
+_cmul.inputs[1].default_value = 0.10   # 0.35->0.10: 두꺼워진 만큼 낮춰 과포화(천장처럼 안 보이게) 방지
+
+_cout = _cnodes.new("ShaderNodeOutputMaterial")
+
+_clinks.new(_ctex.outputs["Fac"], _cmap.inputs["Value"])
+_clinks.new(_cmap.outputs["Result"], _cmul.inputs[0])
+_clinks.new(_cmul.outputs["Value"], _cvol.inputs["Density"])
+_clinks.new(_cvol.outputs["Volume"], _cout.inputs["Volume"])
+
+cloud_obj.data.materials.append(cloud_mat)
+
+# =============================================
+# 카메라
+# 기존(X=75°)은 거의 땅만 보여서 하늘이 화면 위쪽 2~3%만 보임 -> "하늘이
+# 어색하다"는 인상의 실제 원인. 수직 시야각(35mm 렌즈, 16:9 기준 약 32°)을
+# 계산해 하늘:땅 비율이 대략 1:2(삼분할법)가 되도록 X=84°로 조정.
+# 카메라를 약간 더 높이고 살짝 뒤로 빼서 시야가 멀어진 만큼 전경 나무들이
+# 너무 작아지지 않게 보완.
+# =============================================
+bpy.ops.object.camera_add(location=(8, -16, 6.5))
 cam = bpy.context.active_object
-cam.rotation_euler[0] = math.radians(75)
+cam.rotation_euler[0] = math.radians(84)
 cam.rotation_euler[2] = math.radians(38)
 cam.data.lens = 35
 scene.camera = cam
@@ -670,7 +745,7 @@ except:
 # =============================================
 # 프리뷰 렌더 (프레임 60) – 애니메이션 전 품질 확인
 # =============================================
-preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v012_preview.png"
+preview_path = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v013_preview.png"
 os.makedirs(os.path.dirname(preview_path), exist_ok=True)
 scene.render.filepath = preview_path
 scene.frame_set(60)
@@ -682,13 +757,13 @@ print(f"프리뷰 저장: {preview_path}")
 # 450프레임 PNG 시퀀스 렌더링 (전체 시뮬레이션 길이 = high 배치까지 착지)
 # 매 프레임 scene.frame_set() → 핸들러 → Curve 갱신 보장
 # =============================================
-frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v012"
+frame_dir = r"C:\Users\kkjjy\Documents\WorldSim\output\WS_forest_rain_v013"
 os.makedirs(frame_dir, exist_ok=True)
 
 print(f"\n{n_frames}프레임 애니메이션 렌더링 시작...")
 for f in range(1, n_frames + 1):
     scene.frame_set(f)   # frame_change_post 핸들러 실행
-    out = os.path.join(frame_dir, f"WS_forest_rain_v012_{f:04d}.png")
+    out = os.path.join(frame_dir, f"WS_forest_rain_v013_{f:04d}.png")
     scene.render.filepath = out
     bpy.ops.render.render(write_still=True)
     if f % 20 == 0 or f == 1:
@@ -700,6 +775,6 @@ print(f"\nPNG 시퀀스 완료: {frame_dir}")
 # .blend 저장
 # =============================================
 bpy.ops.wm.save_as_mainfile(
-    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v012.blend"
+    filepath=r"C:\Users\kkjjy\Documents\WorldSim\WS_forest_rain_v013.blend"
 )
-print("씬 저장: WS_forest_rain_v012.blend")
+print("씬 저장: WS_forest_rain_v013.blend")
