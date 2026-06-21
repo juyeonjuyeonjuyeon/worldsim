@@ -39,7 +39,8 @@ PUDDLE_GROWTH = 0.15
 PUDDLE_DECAY = 0.004
 RIPPLE_BOOST = 2.5
 WETNESS_GROWTH_PER_SEC = 1.0 / 60.0    # 계속 비 오면 ~60초에 완전히 젖음
-WETNESS_DECAY_PER_SEC  = 1.0 / 180.0   # 비 그치면 ~180초에 거의 마름
+WETNESS_DECAY_PER_SEC  = 1.0           # 비 체크 끄면 ~1초 안에 마름(관찰용 즉시 전환)
+PUDDLE_DECAY_OFF        = 0.08          # 비 없을 때 웅덩이가 빠르게(~0.5초) 사라짐
 WIND_DIR_DEG = 30.0   # 바람 방향(고정, 세기/유무만 조절 대상)
 WIND_DX = math.cos(math.radians(WIND_DIR_DEG))
 WIND_DY = math.sin(math.radians(WIND_DIR_DEG))
@@ -428,10 +429,21 @@ def build_scene():
     sky.air_density = 1.0
     sky.aerosol_density = 5.5
     sky.ozone_density = 1.0
+    # Nishita 하늘 모델은 해가 지평선 한참 아래로 내려가면 색이 그냥
+    # (0,0,0) 검정을 출력함(물리적으로는 맞지만 — 빛 산란시킬 직사광이
+    # 없으니까). 그 검정에 아무리 Strength를 곱해도 여전히 검정이라 "밤은
+    # 무조건 새까매짐" 문제의 진짜 원인이었음. 고정된 야간 하늘색을 Mix로
+    # 섞어서 밤에도 옅은 색이 남게 함 (apply_time_of_day가 Fac을 갱신).
+    night_sky_color = wn.new("ShaderNodeRGB")
+    night_sky_color.outputs[0].default_value = (0.10, 0.14, 0.24, 1.0)
+    sky_mix = wn.new("ShaderNodeMix")
+    sky_mix.data_type = 'RGBA'
+    wl.new(sky.outputs["Color"], sky_mix.inputs[6])     # A (Fac=0일 때)
+    wl.new(night_sky_color.outputs[0], sky_mix.inputs[7])  # B (Fac=1일 때)
     bg = wn.new("ShaderNodeBackground")
     bg.inputs["Strength"].default_value = 0.45
     out_w = wn.new("ShaderNodeOutputWorld")
-    wl.new(sky.outputs["Color"], bg.inputs["Color"])
+    wl.new(sky_mix.outputs[2], bg.inputs["Color"])
     wl.new(bg.outputs["Background"], out_w.inputs["Surface"])
 
     # ── 조명 ──
@@ -514,32 +526,59 @@ def build_scene():
         puddle_centers=puddle_centers_arr, puddle_wetness=puddle_wetness,
         ground_wetness_value=ground_wetness_value,
         sky=sky, bg=bg, sun=sun, sl=sl, cloud_mapping=cloud_mapping,
+        cloud_obj=cloud_obj, mist_obj=mist_obj, sky_mix=sky_mix,
     ))
 
 # =====================================================================
 # 시간대(0~24시) -> 조명/하늘 (단순화된 모델, 위도/계절 미반영 근사)
 # =====================================================================
+def _lerp3(a, b, f):
+    return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f)
+
 def apply_time_of_day(hour):
     sky, bg, sun, sl = _state["sky"], _state["bg"], _state["sun"], _state["sl"]
     elevation_deg = 60.0 * math.sin(math.radians((hour - 6) / 12.0 * 180.0))
     elevation_deg = max(-90.0, min(60.0, elevation_deg))
-    daylight = max(0.0, math.sin(math.radians(max(elevation_deg, 0.0))))
 
+    # 태양 고도뿐 아니라 방위(동→서)도 시간에 따라 돌게 함 — 하늘 색 변화가
+    # Nishita 모델(실제 대기 산란)에서 더 자연스럽게 드러나고, 뜨고 지는
+    # 방향감도 생김. 6시=동쪽(90°), 18시=서쪽(270°)로 선형 이동, 밤에는 계속.
+    azimuth_deg = (90.0 + (hour - 6.0) / 12.0 * 180.0) % 360.0
+    sky.sun_rotation = math.radians(azimuth_deg)
     sky.sun_elevation = math.radians(elevation_deg)
     sun.rotation_euler[0] = math.radians(90.0 - elevation_deg)
+    sun.rotation_euler[2] = math.radians(azimuth_deg)
 
-    if elevation_deg < 8.0:
-        warm = max(0.0, 1.0 - elevation_deg / 8.0)
-    else:
-        warm = 0.0
-    sun_color = (1.0 - warm * 0.0, 1.0 - warm * 0.40, 1.0 - warm * 0.70)
+    # daylight: 고도 -6°(황혼 끝)~20°(완전 낮) 사이를 선형으로 매끄럽게 보간.
+    # 이전엔 sin(elevation)을 그대로 써서 고도가 0을 넘는 순간 daylight가
+    # 0에서 갑자기 양수로 튀어 황혼 구간이 통째로 "밤"으로 처리됐었음
+    # (일출/일몰 때 색이 안 변한다는 버그의 직접 원인).
+    daylight = max(0.0, min(1.0, (elevation_deg + 6.0) / 26.0))
+
+    # 색 보간: 낮(흰색) -> 일출/일몰(주황, 고도 0 근처) -> 밤(청백 달빛).
+    white  = (1.0, 1.0, 1.0)
+    orange = (1.0, 0.60, 0.30)
+    moonlt = (0.65, 0.72, 0.95)
+    warm = max(0.0, min(1.0, 1.0 - elevation_deg / 20.0))       # 낮->주황 보간 비중
+    night_blend = max(0.0, min(1.0, -elevation_deg / 6.0))       # 주황->달빛 보간 비중
+    day_or_sunset_color = _lerp3(white, orange, warm)
+    sun_color = _lerp3(day_or_sunset_color, moonlt, night_blend)
     sun.data.color = sun_color
+    sl.data.color = _lerp3((0.60, 0.72, 1.0), (0.55, 0.62, 0.85), night_blend)
+    # 하늘 자체도 night_blend만큼 고정 야간색으로 섞어줌 (Strength만으론
+    # 해결 안 됐던 "물리적으로 진짜 검정"인 Nishita 출력 문제의 핵심 수정).
+    _state["sky_mix"].inputs[0].default_value = night_blend
 
-    night_floor = 0.02
-    sun.data.energy = 0.4 * daylight
-    sl.data.energy = 90.0 * max(daylight, night_floor)
-    sl.data.color = (0.60, 0.72, 1.0) if daylight > 0.05 else (0.55, 0.62, 0.85)
-    bg.inputs["Strength"].default_value = 0.45 * max(daylight, night_floor * 1.5)
+    # 달빛 바닥값 — 비현실적으로 새까매지지 않게 옅은 빛을 유지(실제 달빛은
+    # 태양빛의 ~100만분의 1 수준이라 엄밀하진 않지만, 화면으로 "관찰"하는
+    # 도구이므로 충분한 시인성을 의도적으로 부여). 비율(daylight*floor)이
+    # 아니라 절대값 바닥(NIGHT_*)으로 둬서 야간 밝기를 직접 조절 가능.
+    NIGHT_SUN_ENERGY = 0.10
+    NIGHT_SL_ENERGY  = 70.0
+    NIGHT_BG_STRENGTH = 1.2
+    sun.data.energy = max(0.4 * daylight, NIGHT_SUN_ENERGY)
+    sl.data.energy = max(90.0 * daylight, NIGHT_SL_ENERGY)
+    bg.inputs["Strength"].default_value = max(0.45 * daylight, NIGHT_BG_STRENGTH)
 
 # =====================================================================
 # 프레임/파라미터 갱신
@@ -555,6 +594,16 @@ def update_scene(scene):
     rain_obj, splash_obj = _state["rain_obj"], _state["splash_obj"]
     rain_obj.hide_viewport = rain_obj.hide_render = not rain_on
     splash_obj.hide_viewport = splash_obj.hide_render = not rain_on
+
+    # ── 비 없을 때: 먹구름/지면 안개도 같이 사라지고 맑은 하늘이 되어야
+    # 함(비 안 오는데 하늘에 비구름이 떠 있는 건 모순). 짙은 에어로졸은
+    # 흐린 날 특유의 설정이라 비가 없을 때는 맑은 날 수준으로 낮춤 — 이
+    # 값을 낮춰야 일출/일몰 때 Nishita 하늘 모델의 붉은색 변화도 안개에
+    # 묻히지 않고 잘 드러남.
+    cloud_obj, mist_obj, sky = _state["cloud_obj"], _state["mist_obj"], _state["sky"]
+    cloud_obj.hide_viewport = cloud_obj.hide_render = not rain_on
+    mist_obj.hide_viewport = mist_obj.hide_render = not rain_on
+    sky.aerosol_density = 5.5 if rain_on else 1.2
 
     hits_per_puddle = np.zeros(len(_state["puddle_objs"]))
 
@@ -634,11 +683,12 @@ def update_scene(scene):
         ground_wetness_level = max(0.0, ground_wetness_level - WETNESS_DECAY_PER_SEC / FPS)
 
     pw = _state["puddle_wetness"]
+    decay_rate = PUDDLE_DECAY if rain_on else PUDDLE_DECAY_OFF
     for pi in range(len(_state["puddle_objs"])):
         if hits_per_puddle[pi] > 0:
             pw[pi] = min(1.0, pw[pi] + PUDDLE_GROWTH * hits_per_puddle[pi])
         else:
-            pw[pi] = max(0.0, pw[pi] - PUDDLE_DECAY)
+            pw[pi] = max(0.0, pw[pi] - decay_rate)
         s = max(0.001, pw[pi]) * _state["puddle_max_r"][pi]
         _state["puddle_objs"][pi].scale = (s, s, 1.0)
 
