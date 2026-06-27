@@ -494,7 +494,7 @@ func _build_ui() -> void:
 	vb.add_child(_labeled(vb, "화면비율", aspect_row))
 
 	var cam_help := Label.new()
-	cam_help.text = "카메라: 우클릭 드래그로 시점, WASD 이동(걷기), 스크롤로 속도조절. 숲 테두리 안에서만 이동 가능."
+	cam_help.text = "카메라: 우클릭 한 번으로 시점모드 켜고끄기(누른 채 드래그 안 해도 됨, Esc로도 끔), WASD 이동(걷기), 스크롤로 속도조절. 숲 테두리 안에서만 이동 가능."
 	cam_help.autowrap_mode = TextServer.AUTOWRAP_WORD
 	vb.add_child(cam_help)
 
@@ -515,14 +515,23 @@ func _set_view_mode(mode: String) -> void:
 			cam_pitch = deg_to_rad(-89.0)
 
 func _set_aspect(ratio: String) -> void:
-	var w := get_window()
+	# Window 노드의 .size 세터가 일부 실행 환경(에디터 디버그 창의 "고정
+	# 창 크기" 옵션, 일부 창 모드 등)에서 무시되는 경우가 있어, 더 낮은
+	# 레벨인 DisplayServer로 직접 OS 창 크기를 바꿈 — 먼저 창 모드를
+	# 일반 창으로 강제해서(최대화/전체화면 상태였다면 그것부터 풀어줌)
+	# 크기 변경이 항상 보이게 함.
+	var size: Vector2i
 	match ratio:
 		"16:9":
-			w.size = Vector2i(1280, 720)
+			size = Vector2i(1280, 720)
 		"9:16":
-			w.size = Vector2i(540, 960)
+			size = Vector2i(540, 960)
 		"1:1":
-			w.size = Vector2i(800, 800)
+			size = Vector2i(800, 800)
+		_:
+			return
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_set_size(size)
 
 func _labeled(_parent: Control, text: String, control: Control) -> Control:
 	var box := VBoxContainer.new()
@@ -557,12 +566,20 @@ func _process(delta: float) -> void:
 	_update_camera(delta)
 
 func _input(event: InputEvent) -> void:
-	# 우클릭을 누르고 있는 동안만 마우스로 시점 회전(그동안 마우스 커서를
-	# 숨기고 가둠) — 떼면 커서가 돌아와 UI 패널 슬라이더를 다시 조작할 수 있음.
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
-		mouse_look_active = event.pressed
+	# 우클릭을 "누르고 있는 동안만" 회전하던 방식 -> 한 번 눌러서 켜고/끄는
+	# 토글 방식으로 변경(트랙패드에서는 버튼을 누른 채로 두 손가락 드래그가
+	# 불편하다는 피드백). 켜져있는 동안은 마우스/트랙패드를 그냥 움직이기만
+	# 해도 회전하고, 다시 우클릭하거나 Esc를 누르면 꺼져서 커서가 돌아와
+	# UI 패널 슬라이더를 조작할 수 있음.
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		mouse_look_active = not mouse_look_active
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if mouse_look_active else Input.MOUSE_MODE_VISIBLE
-	elif event is InputEventMouseMotion and mouse_look_active:
+		return
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE and mouse_look_active:
+		mouse_look_active = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		return
+	if event is InputEventMouseMotion and mouse_look_active:
 		var sens: float = 0.0035
 		cam_yaw -= event.relative.x * sens
 		# 하늘뷰/땅뷰는 "누워서 위만" / "공중에서 아래만"이 핵심이라 시선
