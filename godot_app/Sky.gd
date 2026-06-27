@@ -3,6 +3,37 @@ extends Node
 
 const STARLIGHT_FLOOR_LUX: float = 0.0008
 
+# 유성우 — [피크 월, 피크 일, 복사점 RA°, 복사점 Dec°, 피크 ZHR, 활동 반폭(일)]
+const SHOWERS: Array = [
+	[1,  3, 230.1,  49.0, 120, 2],   # 사분의자리   Quadrantids
+	[4, 22, 271.4,  33.6,  18, 3],   # 거문고자리   Lyrids
+	[5,  6, 338.0,  -1.0,  50, 5],   # 물병자리η    Eta Aquariids
+	[7, 29, 339.0,  -5.0,  20, 4],   # 물병자리δ    Delta Aquariids
+	[8, 12,  46.4,  58.3, 100, 6],   # 페르세우스자리★ Perseids
+	[10,21,  95.0,  15.8,  20, 5],   # 오리온자리   Orionids
+	[11,17, 152.3,  21.6,  15, 3],   # 사자자리     Leonids
+	[12,14, 112.3,  32.5, 120, 4],   # 쌍둥이자리 ★ Geminids
+	[12,22, 102.6,  82.0,  10, 3],   # 작은곰자리   Ursids
+]
+# 혜성 RA/Dec 키프레임 — [[yr,mo,day,RA°,Dec°,mag], ...]
+# 가시 기간(최초~최후 키프레임) + 등급 ≤ 5.5 일 때만 표시
+const COMETS: Array = [
+	["Hale-Bopp", [
+		[1997, 1,  1, 334.0, -1.0, 3.0],
+		[1997, 3,  1,   3.8, 35.0, 1.0],
+		[1997, 4,  1,  37.5, 56.0, 0.0],
+		[1997, 5,  1,  60.0, 64.0, 1.5],
+		[1997, 7,  1,  82.5, 62.0, 3.5],
+	]],
+	["Neowise", [
+		[2020, 7,  5,  80.0, 33.0, 0.0],
+		[2020, 7, 14,  70.5, 36.0, 1.5],
+		[2020, 7, 22,  63.0, 44.0, 2.5],
+		[2020, 8,  1,  58.0, 51.0, 3.5],
+		[2020, 8, 10,  55.0, 56.0, 5.0],
+	]],
+]
+
 # 별자리 선분 [ra1°, dec1°, ra2°, dec2°] — J2000.0 좌표
 const CONST_SEGS: Array = [
 	# 큰곰자리 (Ursa Major / Big Dipper)
@@ -119,6 +150,14 @@ var _meteor_head: Vector3  = Vector3.ZERO
 var _meteor_dir:  Vector3  = Vector3.DOWN
 var _meteor_len:  float    = 20.0     # 꼬리 최대 길이 (sky dome 단위)
 var _meteor_color: Color   = Color.WHITE
+var _shower_intensity: float  = 0.0        # 현재 유성우 강도 (0=없음, 1=피크)
+var _shower_radiant:  Vector3 = Vector3.UP # 복사점 방향 (단위 벡터)
+var _comet_nuc_inst:  MeshInstance3D       # 혜성 핵
+var _comet_nuc_mat:   ShaderMaterial
+var _comet_ion_mesh:  ImmediateMesh        # 이온 꼬리 (청백, 직선)
+var _comet_ion_inst:  MeshInstance3D
+var _comet_dust_mesh: ImmediateMesh        # 먼지 꼬리 (황백, 넓고 약간 굽음)
+var _comet_dust_inst: MeshInstance3D
 var _star_data: Array = []
 var _current_exposure: float = 1.0  # 노출 스무딩 상태 (프레임 간 급격한 변화 방지)
 
@@ -132,6 +171,7 @@ func build() -> void:
 	_build_clouds()
 	_build_bolt()
 	_build_meteor()
+	_build_comet()
 
 func _load_star_catalog() -> void:
 	var f := FileAccess.open("res://stars.json", FileAccess.READ)
@@ -477,7 +517,8 @@ func update(
 	_update_planets(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_constellations(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_bolt(lightning_flash, lightning_bolt_dist_km)
-	_update_meteor(sun_altaz, cloud_props, delta)
+	_update_meteor(sun_altaz, cloud_props, dt, hour_utc, latitude, longitude, delta)
+	_update_comet(sun_altaz, dt, hour_utc, latitude, longitude)
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
 
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
@@ -843,20 +884,24 @@ void fragment() {
 	add_child(_meteor_inst)
 
 func _spawn_meteor() -> void:
-	# 하늘의 무작위 위치에서 시작
-	var az:  float = randf_range(0.0, 360.0)
-	var alt: float = randf_range(25.0, 75.0)
-	var r:   float = 395.0  # 별 안쪽 sky dome
-	_meteor_head = _altaz_to_dir(alt, az) * r
-	# 이동 방향: 천정 반대 방향(아래) + 측면 성분 → 비스듬한 궤적
-	var down: Vector3 = -_meteor_head.normalized()
-	var side: Vector3 = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)).normalized()
-	_meteor_dir = (down * randf_range(0.6, 1.0) + side * randf_range(0.1, 0.6)).normalized()
-	# 궤적 길이: 시야각 8~28° → dome 위 실제 호 거리
+	var r: float = 395.0
+	if _shower_intensity > 0.1:
+		# 유성우: 하늘 무작위 위치에서 출발, 복사점 반대 방향(-radiant)으로 이동
+		# → 뒤로 연장하면 복사점에서 수렴 (원근 수렴 효과 자동 성립)
+		var az:  float = randf_range(0.0, 360.0)
+		var alt: float = randf_range(10.0, 80.0)
+		_meteor_head = _altaz_to_dir(alt, az) * r
+		_meteor_dir  = -_shower_radiant.normalized()
+	else:
+		# 산발 유성: 무작위 방향
+		var az:  float = randf_range(0.0, 360.0)
+		var alt: float = randf_range(25.0, 75.0)
+		_meteor_head = _altaz_to_dir(alt, az) * r
+		var down: Vector3 = -_meteor_head.normalized()
+		var side: Vector3 = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)).normalized()
+		_meteor_dir = (down * randf_range(0.6, 1.0) + side * randf_range(0.1, 0.6)).normalized()
 	_meteor_len = r * deg_to_rad(randf_range(8.0, 28.0))
-	# 지속시간: 0.15~0.55초 (밝고 느린 화구는 길게)
 	_meteor_dur = randf_range(0.15, 0.55)
-	# 색: 주로 황백, 일부 청백(고속), 일부 주황(저속 Fe)
 	var roll: float = randf()
 	if roll < 0.15:
 		_meteor_color = Color(0.70, 0.85, 1.00)   # 청백 (Mg/Ca, 고속)
@@ -891,14 +936,19 @@ func _draw_meteor() -> void:
 	_meteor_mesh.surface_end()
 	_meteor_inst.visible = true
 
-func _update_meteor(sun_altaz: Vector2, cloud_props: Dictionary, delta: float) -> void:
-	# 별 가시성 계산 (별·별자리와 동일 공식)
+func _update_meteor(sun_altaz: Vector2, cloud_props: Dictionary, dt: Dictionary, hour_utc: float, latitude: float, longitude: float, delta: float) -> void:
 	var night_blend: float = clampf(-sun_altaz.x / 6.0, 0.0, 1.0)
 	var star_vis: float    = night_blend * (1.0 - cloud_props["okta"])
 	if star_vis < 0.15:
 		_meteor_inst.visible = false
 		_meteor_t = -1.0
 		return
+	# 유성우 상태 계산 (복사점 방향 + 강도)
+	var jd:   float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
+	var gmst: float = Astronomy.gmst_deg(jd)
+	var sh_state: Array = _get_shower_state(dt, gmst, latitude, longitude)
+	_shower_intensity = sh_state[0]
+	_shower_radiant   = sh_state[1]
 	# 진행 중인 유성 업데이트
 	if _meteor_t >= 0.0:
 		_meteor_t += delta / max(_meteor_dur, 0.01)
@@ -912,9 +962,182 @@ func _update_meteor(sun_altaz: Vector2, cloud_props: Dictionary, delta: float) -
 	_meteor_next -= delta
 	if _meteor_next <= 0.0:
 		_spawn_meteor()
-		# 산발 유성: 맑은 밤 시간당 5~8개 → 화면 시간 20~60초 간격
-		# star_vis 높을수록 자주 (어두운 하늘일수록 많이 보임)
-		_meteor_next = randf_range(20.0, 60.0) / max(star_vis, 0.1)
+		# 기본 간격: 20~60초 / star_vis
+		# 유성우 중: 강도에 비례해 간격 단축 (피크 ZHR 120 → 최대 5× 단축)
+		var interval: float = randf_range(20.0, 60.0) / max(star_vis, 0.1)
+		interval /= max(1.0, 1.0 + _shower_intensity * 4.0)
+		_meteor_next = interval
+
+# ── 유성우 ───────────────────────────────────────────────────────────
+# 현재 날짜에서 가장 강한 유성우의 [강도, 복사점 방향] 반환
+func _get_shower_state(dt: Dictionary, gmst: float, lat: float, lon: float) -> Array:
+	var best_i: float   = 0.0
+	var best_r: Vector3 = Vector3.UP
+	for sh in SHOWERS:
+		var pm: int   = sh[0]; var pd: int   = sh[1]
+		var ra: float = sh[2]; var dec: float = sh[3]
+		var zhr: int  = sh[4]; var hw: int   = sh[5]
+		# 날짜 차이 (일), 연도 경계 처리
+		var sim_doy:  int = _day_of_year(dt["month"], dt["day"])
+		var peak_doy: int = _day_of_year(pm, pd)
+		var diff: int = sim_doy - peak_doy
+		if diff >  183: diff -= 366
+		if diff < -183: diff += 366
+		var intensity: float = exp(-float(diff * diff) / float(hw * hw))
+		if intensity < 0.05:
+			continue
+		# 복사점 고도 계산 — 지평선 아래면 그 지역에서 관측 불가
+		var altaz: Vector2 = Astronomy.radec_to_altaz(ra, dec, gmst, lat, lon)
+		if altaz.x < 0.0:
+			continue
+		# ZHR 정규화 (최대 120 기준) × 복사점 고도 sin(alt) × 피크 강도
+		intensity *= (float(zhr) / 120.0) * sin(deg_to_rad(altaz.x))
+		if intensity > best_i:
+			best_i = intensity
+			best_r = _altaz_to_dir(altaz.x, altaz.y)
+	return [best_i, best_r]
+
+static func _day_of_year(month: int, day: int) -> int:
+	const DAYS: Array = [0,31,59,90,120,151,181,212,243,273,304,334]
+	return DAYS[month - 1] + day
+
+# ── 혜성 ─────────────────────────────────────────────────────────────
+func _build_comet() -> void:
+	# 핵: billboard QuadMesh + 방사형 글로우
+	var quad := QuadMesh.new()
+	quad.size = Vector2(8.0, 8.0)
+	_comet_nuc_inst = MeshInstance3D.new()
+	_comet_nuc_inst.mesh = quad
+	_comet_nuc_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var nuc_shader := Shader.new()
+	nuc_shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, blend_add, depth_draw_never, billboard;
+uniform float brightness = 0.0;
+uniform vec3  nuc_color  = vec3(1.0, 0.98, 0.92);
+void fragment() {
+\tvec2 uv = UV * 2.0 - 1.0;
+\tfloat glow = exp(-dot(uv,uv) * 4.0) * brightness;
+\tALBEDO = nuc_color;
+\tALPHA  = glow;
+}
+"""
+	_comet_nuc_mat = ShaderMaterial.new()
+	_comet_nuc_mat.shader = nuc_shader
+	_comet_nuc_mat.set_shader_parameter("brightness", 0.0)
+	_comet_nuc_inst.material_override = _comet_nuc_mat
+	_comet_nuc_inst.visible = false
+	add_child(_comet_nuc_inst)
+	# 꼬리용 공유 셰이더 (퍼 버텍스 컬러)
+	var tail_s := Shader.new()
+	tail_s.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, blend_add, depth_draw_never;
+void fragment() { ALBEDO = COLOR.rgb; ALPHA = COLOR.a; }
+"""
+	_comet_ion_mesh  = ImmediateMesh.new()
+	_comet_ion_inst  = MeshInstance3D.new()
+	_comet_ion_inst.mesh = _comet_ion_mesh
+	_comet_ion_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var ion_mat := ShaderMaterial.new(); ion_mat.shader = tail_s
+	_comet_ion_inst.material_override = ion_mat
+	_comet_ion_inst.visible = false
+	add_child(_comet_ion_inst)
+	_comet_dust_mesh = ImmediateMesh.new()
+	_comet_dust_inst = MeshInstance3D.new()
+	_comet_dust_inst.mesh = _comet_dust_mesh
+	_comet_dust_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var dust_mat := ShaderMaterial.new(); dust_mat.shader = tail_s
+	_comet_dust_inst.material_override = dust_mat
+	_comet_dust_inst.visible = false
+	add_child(_comet_dust_inst)
+
+func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude: float, longitude: float) -> void:
+	var jd:   float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
+	var gmst: float = Astronomy.gmst_deg(jd)
+	# ── 혜성 위치 보간 ─────────────────────────────────────────────────
+	var found:      bool  = false
+	var comet_ra:   float = 0.0
+	var comet_dec:  float = 0.0
+	var comet_mag:  float = 10.0
+	for comet in COMETS:
+		var frames: Array = comet[1]
+		if frames.size() < 2:
+			continue
+		var jd0: float = Astronomy.julian_day(frames[0][0],                frames[0][1],                frames[0][2],                0.0)
+		var jd1: float = Astronomy.julian_day(frames[frames.size()-1][0],  frames[frames.size()-1][1],  frames[frames.size()-1][2],  0.0)
+		if jd < jd0 or jd > jd1 + 1.0:
+			continue
+		for i in range(frames.size() - 1):
+			var fa: float = Astronomy.julian_day(frames[i][0],   frames[i][1],   frames[i][2],   0.0)
+			var fb: float = Astronomy.julian_day(frames[i+1][0], frames[i+1][1], frames[i+1][2], 0.0)
+			if jd >= fa and jd <= fb + 0.001:
+				var t: float = clampf((jd - fa) / max(fb - fa, 0.001), 0.0, 1.0)
+				comet_ra  = lerp(float(frames[i][3]),   float(frames[i+1][3]),   t)
+				comet_dec = lerp(float(frames[i][4]),   float(frames[i+1][4]),   t)
+				comet_mag = lerp(float(frames[i][5]),   float(frames[i+1][5]),   t)
+				found = true
+				break
+		if found:
+			break
+	if not found or comet_mag > 5.5:
+		_comet_nuc_inst.visible  = false
+		_comet_ion_inst.visible  = false
+		_comet_dust_inst.visible = false
+		return
+	# 고도/방위각
+	var ca: Vector2 = Astronomy.radec_to_altaz(comet_ra, comet_dec, gmst, latitude, longitude)
+	if ca.x < 3.0:
+		_comet_nuc_inst.visible  = false
+		_comet_ion_inst.visible  = false
+		_comet_dust_inst.visible = false
+		return
+	var r: float      = 395.0
+	var cpos: Vector3 = _altaz_to_dir(ca.x, ca.y) * r
+	_comet_nuc_inst.global_position = cpos
+	var bright: float = clampf((5.5 - comet_mag) / 5.5, 0.0, 1.0)
+	_comet_nuc_mat.set_shader_parameter("brightness", bright * 1.5)
+	_comet_nuc_inst.visible = true
+	# ── 꼬리 방향: 태양 반대 ────────────────────────────────────────────
+	var sun3: Vector3    = _altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
+	var away: Vector3    = -sun3  # 태양→혜성 방향 반대
+	var ion_len: float   = r * deg_to_rad(18.0) * bright  # 이온 꼬리: 최대 18°
+	# 먼지 꼬리: 공전 속도로 약간 굽음, 길이 이온 꼬리의 80%
+	var orb_perp: Vector3 = away.cross(cpos.normalized()).normalized()
+	var dust_dir: Vector3 = (away + orb_perp * 0.3).normalized()
+	var dust_len: float   = ion_len * 0.80
+	# ── 이온 꼬리 렌더 (청백 단일 선, 16세그) ────────────────────────────
+	_comet_ion_mesh.clear_surfaces()
+	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	const NT: int = 16
+	for i in range(NT):
+		var t0: float   = float(i)     / NT
+		var t1: float   = float(i + 1) / NT
+		var a0: float   = (1.0 - t0) * bright
+		var a1: float   = (1.0 - t1) * bright
+		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, a0))
+		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t0)
+		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, a1))
+		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t1)
+	_comet_ion_mesh.surface_end()
+	_comet_ion_inst.visible = true
+	# ── 먼지 꼬리 렌더 (황백 5평행선, 넓이 표현) ─────────────────────────
+	_comet_dust_mesh.clear_surfaces()
+	_comet_dust_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	var spread: Vector3 = dust_dir.cross(cpos.normalized()).normalized()
+	for lane in range(-2, 3):
+		var ofs: Vector3 = spread * float(lane) * 2.0
+		for i in range(NT):
+			var t0: float   = float(i)     / NT
+			var t1: float   = float(i + 1) / NT
+			var a0: float   = (1.0 - t0) * bright * 0.55 * 0.2  # 5선이므로 /5
+			var a1: float   = (1.0 - t1) * bright * 0.55 * 0.2
+			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, a0))
+			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t0 + ofs * t0)
+			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, a1))
+			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t1 + ofs * t1)
+	_comet_dust_mesh.surface_end()
+	_comet_dust_inst.visible = true
 
 # ── 수학 헬퍼 (static) ───────────────────────────────────────────────
 static func _altaz_to_dir(alt_deg: float, az_deg: float) -> Vector3:
