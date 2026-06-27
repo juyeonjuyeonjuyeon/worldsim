@@ -500,7 +500,8 @@ void fragment() {
 	// 실버 라이닝: 얇은 가장자리에서 태양빛 투과 → 따뜻하고 밝은 테두리
 	col = mix(col, sun_color * 1.6, thin * sun_up * 0.55);
 	ALBEDO = col * brightness;
-	ALPHA  = a;
+	// 밤에는 brightness가 거의 0이므로 ALPHA도 함께 줄여 구름 노이즈 패턴이 남지 않도록 함
+	ALPHA  = a * smoothstep(0.03, 0.4, brightness);
 }
 """
 	_cloud_shader_mat = ShaderMaterial.new()
@@ -547,12 +548,16 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sun_dir: Vector3 = _altaz_to_dir(elevation, azimuth)
 	_sun_light.global_transform = Transform3D(Basis.looking_at(-sun_dir, Vector3.UP), Vector3.ZERO)
 
+	# 카메라 위치 — 태양/달 메시를 카메라 기준으로 배치하여 ProceduralSky glow와 정렬
+	var sky_cam: Camera3D = get_viewport().get_camera_3d()
+	var cam_origin: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
+
 	var moon_alt: float   = moon["alt"]
 	var moon_az: float    = moon["az"]
 	var moon_illum: float = moon["illum"]
 	var moon_dir: Vector3 = _altaz_to_dir(moon_alt, moon_az)
 	_moon_light.global_transform = Transform3D(Basis.looking_at(-moon_dir, Vector3.UP), Vector3.ZERO)
-	_moon_mesh.position = moon_dir * 100.0
+	_moon_mesh.global_position = cam_origin + moon_dir * 100.0
 	_moon_mesh.visible  = moon_alt > 0.0
 	_moon_shader_mat.set_shader_parameter("sun_dir", sun_dir)
 	# 달 고도에 따른 색: 지평선 근처=오렌지(대기 산란), 상공=청백
@@ -568,8 +573,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		lerp(1.00, 0.55, moon_hz)
 	)
 
-	# 태양 원반 위치/색 업데이트 — sun_color 계산 전에 먼저 위치 설정
-	_sun_mesh.position = sun_dir * 100.0
+	_sun_mesh.global_position = cam_origin + sun_dir * 100.0
 	_sun_mesh.visible  = elevation > -3.0
 
 	var warm: float        = clampf(1.0 - elevation / 20.0, 0.0, 1.0)
