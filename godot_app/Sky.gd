@@ -246,10 +246,18 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_moon_mesh.position = moon_dir * 100.0
 	_moon_mesh.visible  = moon_alt > 0.0
 	_moon_shader_mat.set_shader_parameter("sun_dir", sun_dir)
-	# 달 고도에 따른 색: 지평선 근처=오렌지, 상공=따뜻한 흰색 (대기 산란)
+	# 달 고도에 따른 색: 지평선 근처=오렌지(대기 산란), 상공=청백
 	var moon_warm: float = clampf(1.0 - moon_alt / 18.0, 0.0, 1.0)
 	var moon_lit_c := Vector3(1.0, lerp(0.98, 0.62, moon_warm * 0.65), lerp(0.92, 0.28, moon_warm * 0.65))
 	_moon_shader_mat.set_shader_parameter("lit_color", moon_lit_c)
+	# DirectionalLight 색도 동일 규칙으로 갱신 (build()의 고정값 대체)
+	# 지평선 = 오렌지황(0.95, 0.75, 0.55), 상공 = 청백(0.75, 0.82, 1.00)
+	var moon_hz: float = clampf(1.0 - moon_alt / 15.0, 0.0, 1.0)
+	_moon_light.light_color = Color(
+		lerp(0.75, 0.95, moon_hz),
+		lerp(0.82, 0.75, moon_hz),
+		lerp(1.00, 0.55, moon_hz)
+	)
 
 	# 태양 원반 위치/색 업데이트 — sun_color 계산 전에 먼저 위치 설정
 	_sun_mesh.position = sun_dir * 100.0
@@ -286,7 +294,10 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_current_exposure = lerp(_current_exposure, target_exp, clampf(delta * 2.0, 0.0, 1.0))
 	var exposure_mult: float = _current_exposure
 	_sun_light.light_energy  = min(clampf(sun_lux / 100000.0 * 3.0, 0.0, 6.0), 6.0 / exposure_mult)
-	_moon_light.light_energy = min(clampf(moon_lux / 0.27 * 0.6, 0.0, 0.6), 0.6 / exposure_mult) * exp(-(cloud_props["tau"] as float))
+	# 달 에너지: 위상에 정확히 비례 (이중 min 제거 — 보름달 vs 반달 밝기 구분)
+	# 지평선 근처(8° 미만)이거나 위상 40% 미만이면 그림자 비활성
+	_moon_light.light_energy = clampf(moon_lux / 0.27 * 0.6, 0.0, 0.6) / exposure_mult * exp(-(cloud_props["tau"] as float))
+	_moon_light.shadow_enabled = moon_alt > 8.0 and moon_illum > 0.40
 
 	sky_brightness_safe = min(1.0, 1.0 / exposure_mult)
 	_moon_shader_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
