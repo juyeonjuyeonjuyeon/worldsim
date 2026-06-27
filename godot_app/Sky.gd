@@ -891,7 +891,7 @@ func _update_planets(dt: Dictionary, hour_utc: float, latitude: float, longitude
 		var pogson_b: float    = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
 		mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, pogson_b * twilight))
 		var dir: Vector3   = _altaz_to_dir(ps["alt"], ps["az"])
-		var scale_: float  = clampf(0.45 * pow(10.0, -0.18 * mag), 0.10, 3.5)
+		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 3.5)
 		mm.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
 
 func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
