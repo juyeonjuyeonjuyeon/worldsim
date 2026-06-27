@@ -534,7 +534,8 @@ func _make_precip_particles(is_snow: bool) -> GPUParticles3D:
 	mat.scale_max = 1.4 if not is_snow else 1.8
 	p.process_material = mat
 	var pmat := StandardMaterial3D.new()
-	pmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# UNSHADED 제거: 눈송이가 조명에 반응하도록 (밤에 tonemap×16이 흰색으로 포화하던 문제)
+	# 빗방울은 별도 ShaderMaterial(render_mode unshaded)을 사용하므로 이 pmat과 무관
 	pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	if not is_snow:
 		# 뷰 공간에 낙하 방향을 투영해 카메라 상하 각도에 무관하게 빗줄기 방향 유지

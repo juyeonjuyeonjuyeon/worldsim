@@ -666,11 +666,14 @@ func _update_fog(weather_type: String, rain_rate: float, temperature: float, win
 	env.fog_enabled = has_fog
 	if has_fog:
 		env.fog_density = _fog_density_cur
+		# 안개 색 기준: sky_horizon_color (밤/낮 tonemap에 맞게 이미 스케일됨)
+		# 고정 밝기색(0.9 등) 사용 시 밤 tonemap×16이 흰색으로 포화시키는 문제 방지
+		var h: Color = _sky_mat.sky_horizon_color
 		match weather_type:
-			"RAIN":  env.fog_light_color = Color(0.60, 0.65, 0.70)
-			"SNOW":  env.fog_light_color = Color(0.90, 0.92, 0.96)
-			_:       env.fog_light_color = Color(0.80, 0.82, 0.86)
-		env.fog_sun_scatter = 0.3
+			"RAIN":  env.fog_light_color = Color(h.r * 0.88, h.g * 0.92, h.b * 1.12)
+			"SNOW":  env.fog_light_color = Color(h.r * 1.10, h.g * 1.10, h.b * 1.08)
+			_:       env.fog_light_color = h
+		env.fog_sun_scatter = 0.25
 
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
 	var elevation: float = sun_altaz.x
