@@ -75,6 +75,11 @@ var cam_yaw: float = 0.0
 var cam_pitch: float = 0.0
 var cam_move_speed: float = 8.0
 var mouse_look_active: bool = false
+var view_mode: String = "NORMAL"  # NORMAL(걷기)/SKY(누워서 하늘)/GROUND(공중에서 내려다봄)
+
+const EYE_HEIGHT: float = 1.7      # 일반뷰/하늘뷰일 때 카메라 높이(사람 눈높이) — 땅을 뚫고 못 내려감
+const GROUND_VIEW_ALT: float = 45.0  # 땅뷰(수직 하강) 고도 — 나무/구름 위에서 숲 전체를 내려다봄
+const MOVE_BOUND: float = 25.0     # 이동 가능 범위(숲 나무가 심긴 영역 기준) — 이 밖(지평선판)으로는 못 나감
 
 var star_data: Array = []
 
@@ -428,11 +433,11 @@ func _build_ui() -> void:
 	add_child(layer)
 	var panel := Panel.new()
 	panel.position = Vector2(10, 10)
-	panel.size = Vector2(280, 520)
+	panel.size = Vector2(280, 620)
 	layer.add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.position = Vector2(10, 10)
-	vb.size = Vector2(260, 500)
+	vb.size = Vector2(260, 600)
 	panel.add_child(vb)
 
 	var weather_opt := OptionButton.new()
@@ -467,10 +472,57 @@ func _build_ui() -> void:
 	ui_status_label.text = "..."
 	vb.add_child(ui_status_label)
 
+	var view_row := HBoxContainer.new()
+	var view_group := ButtonGroup.new()
+	for vm in [["일반뷰", "NORMAL"], ["하늘뷰", "SKY"], ["땅뷰", "GROUND"]]:
+		var vbtn := Button.new()
+		vbtn.text = vm[0]
+		vbtn.toggle_mode = true
+		vbtn.button_group = view_group
+		if vm[1] == "NORMAL":
+			vbtn.button_pressed = true
+		vbtn.pressed.connect(func(): _set_view_mode(vm[1]))
+		view_row.add_child(vbtn)
+	vb.add_child(_labeled(vb, "시점", view_row))
+
+	var aspect_row := HBoxContainer.new()
+	for ar in ["16:9", "9:16", "1:1"]:
+		var abtn := Button.new()
+		abtn.text = ar
+		abtn.pressed.connect(func(): _set_aspect(ar))
+		aspect_row.add_child(abtn)
+	vb.add_child(_labeled(vb, "화면비율", aspect_row))
+
 	var cam_help := Label.new()
-	cam_help.text = "카메라: 우클릭 드래그로 시점, WASD 이동, Space/Shift 위아래, 스크롤로 속도조절"
+	cam_help.text = "카메라: 우클릭 드래그로 시점, WASD 이동(걷기), 스크롤로 속도조절. 숲 테두리 안에서만 이동 가능."
 	cam_help.autowrap_mode = TextServer.AUTOWRAP_WORD
 	vb.add_child(cam_help)
+
+func _set_view_mode(mode: String) -> void:
+	view_mode = mode
+	match mode:
+		"NORMAL":
+			camera.position.y = EYE_HEIGHT
+			cam_pitch = 0.0
+		"SKY":
+			# 누워서 하늘만 보는 뷰 — 눈높이는 그대로 두고 시선만 수직으로 위.
+			camera.position.y = EYE_HEIGHT
+			cam_pitch = deg_to_rad(89.0)
+		"GROUND":
+			# 공중에서 수직으로 내려다보는 뷰 — 나무/구름 위 고도로 올라가
+			# 숲 전체 배치를 한눈에 봄.
+			camera.position.y = GROUND_VIEW_ALT
+			cam_pitch = deg_to_rad(-89.0)
+
+func _set_aspect(ratio: String) -> void:
+	var w := get_window()
+	match ratio:
+		"16:9":
+			w.size = Vector2i(1280, 720)
+		"9:16":
+			w.size = Vector2i(540, 960)
+		"1:1":
+			w.size = Vector2i(800, 800)
 
 func _labeled(_parent: Control, text: String, control: Control) -> Control:
 	var box := VBoxContainer.new()
@@ -513,7 +565,11 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and mouse_look_active:
 		var sens: float = 0.0035
 		cam_yaw -= event.relative.x * sens
-		cam_pitch = clampf(cam_pitch - event.relative.y * sens, deg_to_rad(-89.0), deg_to_rad(89.0))
+		# 하늘뷰/땅뷰는 "누워서 위만" / "공중에서 아래만"이 핵심이라 시선
+		# 상하각을 고정해둠(좌우로 둘러보는 건 그대로 허용) — 일반뷰일 때만
+		# 마우스로 위아래를 자유롭게 봄.
+		if view_mode == "NORMAL":
+			cam_pitch = clampf(cam_pitch - event.relative.y * sens, deg_to_rad(-89.0), deg_to_rad(89.0))
 	elif event is InputEventMouseButton and event.pressed and mouse_look_active:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			cam_move_speed = clampf(cam_move_speed * 1.2, 0.5, 200.0)
@@ -528,23 +584,34 @@ func _update_camera(delta: float) -> void:
 	# 안 된다"로 보였을 만한 원인. 텍스트 입력 필드가 없는 UI라 키보드가
 	# 슬라이더 조작과 충돌하지 않으므로, 이동은 항상 켜두고 시점 회전만
 	# 우클릭 드래그로 제한(마우스가 슬라이더를 조작할 수 있게).
+	#
+	# 실제로 걸어다니는 느낌을 위해: 이동 방향은 시선의 상하각(pitch)과
+	# 무관하게 좌우 회전(yaw)만으로 구함 — 고개를 들어 하늘을 봐도 위로
+	# 날아오르지 않고 항상 수평으로만 걸어가게(이전엔 basis.z를 그대로 써서
+	# 위/아래를 보면서 W를 누르면 그 방향으로 날아가버렸음).
+	var yaw_fwd := Vector3(-sin(cam_yaw), 0.0, -cos(cam_yaw))
+	var yaw_right := Vector3(cos(cam_yaw), 0.0, -sin(cam_yaw))
 	var dir := Vector3.ZERO
-	var basis: Basis = camera.transform.basis
 	if Input.is_key_pressed(KEY_W):
-		dir -= basis.z
+		dir += yaw_fwd
 	if Input.is_key_pressed(KEY_S):
-		dir += basis.z
-	if Input.is_key_pressed(KEY_A):
-		dir -= basis.x
+		dir -= yaw_fwd
 	if Input.is_key_pressed(KEY_D):
-		dir += basis.x
-	if Input.is_key_pressed(KEY_SPACE) or Input.is_key_pressed(KEY_E):
-		dir += Vector3.UP
-	if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_Q):
-		dir -= Vector3.UP
+		dir += yaw_right
+	if Input.is_key_pressed(KEY_A):
+		dir -= yaw_right
 	if dir.length_squared() > 0.0:
 		var speed: float = cam_move_speed * (2.5 if Input.is_key_pressed(KEY_CTRL) else 1.0)
 		camera.position += dir.normalized() * speed * delta
+
+	# 숲 테두리 안에서만 이동 가능 — 나무가 심긴 영역(대략 ±19) 기준으로
+	# 약간 여유를 둔 ±25 밖(평평한 지평선판 쪽)으로는 못 나가게 막음.
+	camera.position.x = clampf(camera.position.x, -MOVE_BOUND, MOVE_BOUND)
+	camera.position.z = clampf(camera.position.z, -MOVE_BOUND, MOVE_BOUND)
+
+	# 땅을 뚫고 내려가지 않게 — Space/Shift로 띄우던 자유비행을 없애고, 시점
+	# 모드별로 높이를 고정함(일반/하늘뷰=눈높이, 땅뷰=공중 고정고도).
+	camera.position.y = GROUND_VIEW_ALT if view_mode == "GROUND" else EYE_HEIGHT
 
 func _current_datetime() -> Dictionary:
 	if real_time_mode:
