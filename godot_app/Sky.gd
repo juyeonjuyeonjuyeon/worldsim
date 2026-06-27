@@ -568,8 +568,11 @@ void fragment() {
 	vec3  col2  = hue_to_rgb(hue2 * 0.75) * band2 * 0.42;
 
 	vec3 col = col1 + col2;
-	ALBEDO = col * intensity * horizon_fade;
-	ALPHA  = clamp((band1 + band2 * 0.42) * intensity * horizon_fade * 3.0, 0.0, 1.0);
+	// blend_add: ALBEDO×ALPHA 만큼 하늘에 덧씌움
+	// 강도를 0.55로 제한해 밝은 낮 하늘에서 흰색으로 포화되지 않도록 함
+	float arc_alpha = clamp((band1 + band2 * 0.42) * horizon_fade * 2.0, 0.0, 0.55);
+	ALBEDO = col * intensity;
+	ALPHA  = arc_alpha * intensity;
 }
 """
 	_rainbow_mat = ShaderMaterial.new()
@@ -617,15 +620,21 @@ func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness
 	var sun_dir: Vector3 = _altaz_to_dir(sun_altaz.x, sun_altaz.y)
 	_rainbow_mat.set_shader_parameter("sun_dir", sun_dir)
 
-	# 무지개 조건: 태양 고도 1°~42°, 비 직후(ground_wetness), 구름 얇을수록 강함
+	# 무지개 물리 조건:
+	# 1) 공기 중 빗방울이 있어야 함 — rain_rate > 0 필수 (땅이 젖어 있는 것만으론 불충분)
+	# 2) 태양이 1°~42° 범위에 있어야 뒤쪽 빗방울에서 반사광이 관측자 방향으로 옴
+	# 3) 구름이 완전히 덮으면 태양광이 차단되어 무지개 소멸
+	var rain_rate_cur: float = cloud_props.get("rain_rate", 0.0)
 	var sun_elev: float = sun_altaz.x
 	var elev_factor: float = 0.0
 	if sun_elev >= 1.0 and sun_elev <= 42.0:
 		elev_factor = smoothstep(1.0, 8.0, sun_elev) * smoothstep(42.0, 34.0, sun_elev)
-	var cloud_fade: float  = clampf(1.0 - cloud_props["okta"] * 1.5, 0.0, 1.0)
-	var wet_factor: float  = clampf(ground_wetness / 0.35, 0.0, 1.0)
-	var target: float = elev_factor * cloud_fade * wet_factor
-	var spd: float = 0.6 if target > _rainbow_intensity else 0.12
+	# 비가 내릴 때만 (rain_rate > 0.5mm/hr) 빗방울 인자 산출
+	var rain_factor: float = clampf((rain_rate_cur - 0.5) / 15.0, 0.0, 1.0)
+	# okta 0.90 이상이면 태양 차단 — 폭우일 때 okta~0.95 이므로 약한 무지개만 가능
+	var cloud_fade: float  = clampf((0.92 - cloud_props["okta"]) / 0.25, 0.0, 1.0)
+	var target: float = elev_factor * rain_factor * cloud_fade
+	var spd: float = 0.5 if target > _rainbow_intensity else 0.08
 	_rainbow_intensity = lerpf(_rainbow_intensity, target, delta * spd)
 	_rainbow_mat.set_shader_parameter("intensity", _rainbow_intensity)
 	_rainbow_mesh.visible = _rainbow_intensity > 0.005
