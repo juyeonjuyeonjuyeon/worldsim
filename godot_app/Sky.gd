@@ -726,8 +726,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_sun_mesh.global_position = cam_origin + sun_dir * 100.0
 	_sun_mesh.visible  = elevation > -3.0
 
-	# 태양 색온도: 0°→주황(~3000K), 35°+→흰색(~5800K). 실제로 20°에서도 선명히 노란색.
-	var warm: float        = clampf(1.0 - elevation / 35.0, 0.0, 1.0)
+	# 태양 색온도: 0°→주황(~3000K), 28°+→흰색(~5800K). 25–30°에서 황백색이 됨(실측).
+	var warm: float        = clampf(1.0 - elevation / 28.0, 0.0, 1.0)
 	var night_blend: float = clampf(-elevation / 6.0, 0.0, 1.0)
 	var white   := Color(1, 1, 1)
 	var orange  := Color(1.0, 0.6, 0.3)
@@ -744,9 +744,9 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sun_lux: float  = _sun_illuminance(elevation)
 	var moon_lux: float = 0.0
 	if moon_alt > 0.0:
-		# 반대현상(opposition effect): 보름달은 선형 예상보다 ~40% 밝음.
-		# pow(illum, 1.8)로 근사 → 반달=0.287, 초승(25%)=0.077 (선형 0.5/0.25보다 훨씬 낮음)
-		moon_lux = 0.27 * pow(moon_illum, 1.8) * sin(deg_to_rad(moon_alt))
+		# 반대현상(opposition effect) + 위상 비선형성:
+		# pow(2.5) → 반달=0.048 lux(실제 0.02–0.05), 초승(25%)=0.008 lux(실제 0.005–0.01)
+		moon_lux = 0.27 * pow(moon_illum, 2.5) * sin(deg_to_rad(moon_alt))
 	var total_lux: float = sun_lux + moon_lux + STARLIGHT_FLOOR_LUX
 
 	var exposure_ev: float = _exposure_for_lux(total_lux)
@@ -763,7 +763,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 달 에너지: 위상에 정확히 비례 (이중 min 제거 — 보름달 vs 반달 밝기 구분)
 	# 지평선 근처(8° 미만)이거나 위상 40% 미만이면 그림자 비활성
 	_moon_light.light_energy = clampf(moon_lux / 0.27 * 0.6, 0.0, 0.6) / exposure_mult * exp(-(cloud_props["tau"] as float))
-	_moon_light.shadow_enabled = moon_alt > 8.0 and moon_illum > 0.40
+	# 달그림자: 고도 12°+ (실제 선명한 달 그림자 관측 가능 최소 고도), 위상 40%+ (상현 이후)
+	_moon_light.shadow_enabled = moon_alt > 12.0 and moon_illum > 0.40
 
 	sky_brightness_safe = min(1.0, 1.0 / exposure_mult)
 	_moon_shader_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
@@ -852,15 +853,19 @@ func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: 
 		var altaz: Vector2 = Astronomy.radec_to_altaz(star["ra"], star["dec"], g, latitude, longitude)
 		var dir: Vector3   = _altaz_to_dir(altaz.x, altaz.y)
 		# 포그손 법칙 기반 로그 크기: 5등급차 = 100배 밝기, 크기는 밝기의 0.18승에 비례
-		var scale_: float  = clampf(0.45 * pow(10.0, -0.18 * mag), 0.10, 3.0)
+		# 포그손 법칙 기반 시각 크기: 밝기 ∝ 10^(-0.4·mag), 크기 ∝ 밝기^0.5 = 10^(-0.20·mag)
+		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 3.0)
 		mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
 
 func _update_planets(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
 	var sun_elev: float  = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude).x
 	var cloud_block: float = cloud_props["okta"]
 	var psmat: ShaderMaterial = _planet_mm.material_override as ShaderMaterial
-	# 행성은 태양 고도 +3° 이하에서 표시 (금성은 낮에도 보이는 경우 있어 기준을 완화)
-	if sun_elev > 3.0:
+	# 금성(-4.5등)은 태양 고도 7°까지 육안 관측 가능, 다른 행성은 3° 이하
+	# 금성 특유의 극밝기 때문에 낮에도 보이는 현상 반영
+	var venus_visible: bool = sun_elev <= 7.0
+	var others_visible: bool = sun_elev <= 3.0
+	if not venus_visible and not others_visible:
 		psmat.set_shader_parameter("global_brightness", 0.0)
 		return
 	psmat.set_shader_parameter("global_brightness", 4.0 * max(0.0, 1.0 - cloud_block))
@@ -875,7 +880,12 @@ func _update_planets(dt: Dictionary, hour_utc: float, latitude: float, longitude
 			mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
 			continue
 		var mag: float = ps["mag"]
-		# 등급별 박명 역치 (금성은 -4.5등 → 태양 +3°에서도 보임, 외행성 공식과 동일 구조)
+		# 금성은 -4.5등 → 최대 태양 고도 7°까지 가시, 다른 행성은 일반 공식
+		var max_sun_elev: float = 7.0 if pname == "venus" else 3.0
+		if sun_elev > max_sun_elev:
+			mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
+			mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
+			continue
 		var appear_elev: float = lerp(-4.0, -14.0, (mag + 1.5) / 6.5)
 		var twilight: float    = clampf((sun_elev - appear_elev - 2.0) / -2.0, 0.0, 1.0)
 		var pogson_b: float    = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
@@ -1432,7 +1442,8 @@ static func _star_spectral_color(ra: float, dec: float) -> Color:
 
 static func _sun_illuminance(alt_deg: float) -> float:
 	var anchors_alt := [-18.0, -12.0, -6.0, 0.0, 10.0, 30.0, 60.0, 90.0]
-	var anchors_lux := [0.0008, 0.008, 3.4, 400.0, 12000.0, 50000.0, 90000.0, 100000.0]
+	# -12° 실측: 0.002–0.004 lux (항해박명 끝 — 지평선 겨우 구분), 10° 실측: ~9,000 lux
+	var anchors_lux := [0.0008, 0.003, 3.4, 400.0, 9000.0, 50000.0, 90000.0, 100000.0]
 	var a: float = clampf(alt_deg, -18.0, 90.0)
 	for i in range(anchors_alt.size() - 1):
 		if a <= anchors_alt[i + 1] or i == anchors_alt.size() - 2:
