@@ -674,19 +674,23 @@ func _update_fog(weather_type: String, rain_rate: float, temperature: float, win
 			# 복사안개: 맑음 + 기온 -2~4°C
 			if cloud_props["okta"] < 0.3 and temperature > -2.0 and temperature < 4.0:
 				target_density = 0.005
-	var fog_spd: float = 0.3 if target_density > _fog_density_cur else 0.1
+	# target=0(맑아지는 중)이면 1.5배속으로 빠르게 소멸
+	var fog_spd: float = 0.3 if target_density > _fog_density_cur else (1.5 if target_density < 0.0001 else 0.1)
 	_fog_density_cur = lerpf(_fog_density_cur, target_density, delta * fog_spd)
-	var has_fog: bool = _fog_density_cur > 0.0001
+	var has_fog: bool = _fog_density_cur > 0.001   # 0.0001→0.001: 잔여 안개 조기 컷오프
 	env.fog_enabled = has_fog
 	if has_fog:
 		env.fog_density = _fog_density_cur
 		# 안개 색 기준: sky_horizon_color (밤/낮 tonemap에 맞게 이미 스케일됨)
-		# 고정 밝기색(0.9 등) 사용 시 밤 tonemap×16이 흰색으로 포화시키는 문제 방지
 		var h: Color = _sky_mat.sky_horizon_color
 		match weather_type:
 			"RAIN":  env.fog_light_color = Color(h.r * 0.88, h.g * 0.92, h.b * 1.12)
 			"SNOW":  env.fog_light_color = Color(h.r * 1.10, h.g * 1.10, h.b * 1.08)
-			_:       env.fog_light_color = h
+			_:
+				# 비→맑음 전환 중 잔여 안개: sky_horizon이 갑자기 밝아져도
+				# 밀도에 비례해 색을 어둡게 유지 → tonemap 증폭 후 큰 광원 방지
+				var dim: float = clampf(_fog_density_cur / 0.015, 0.0, 1.0)
+				env.fog_light_color = Color(h.r * dim, h.g * dim, h.b * dim)
 		env.fog_sun_scatter = 0.25
 
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
