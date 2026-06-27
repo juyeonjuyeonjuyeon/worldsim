@@ -201,6 +201,9 @@ func _build_all(init: Dictionary) -> void:
 		"latitude":           init.get("latitude",           37.5665),
 		"longitude":          init.get("longitude",          126.978),
 		"utc_offset":         init.get("utc_offset",         9.0),
+		"sim_year":           init.get("sim_year",           2026),
+		"sim_month":          init.get("sim_month",          6),
+		"sim_day":            init.get("sim_day",            21),
 		"time_of_day":        init.get("time_of_day",        12.0),
 		"real_time_mode":     init.get("real_time_mode",     false),
 		"day_length_sec":     init.get("day_length_sec",     120.0),
@@ -269,6 +272,9 @@ func _build_all(init: Dictionary) -> void:
 	vb.add_child(_slider_row("위도",      -90.0, 90.0,   init.get("latitude",      37.5665), func(v): _pending["latitude"]     = v))
 	vb.add_child(_slider_row("경도",      -180.0, 180.0, init.get("longitude",     126.978), func(v): _pending["longitude"]    = v))
 	vb.add_child(_slider_row("UTC오프셋", -12.0, 14.0,   init.get("utc_offset",    9.0),     func(v): _pending["utc_offset"]   = v))
+	vb.add_child(_int_slider_row("연도",  1900, 2100, init.get("sim_year",  2026), func(v): _pending["sim_year"]  = v))
+	vb.add_child(_int_slider_row("월",       1,   12, init.get("sim_month",    6), func(v): _pending["sim_month"] = v))
+	vb.add_child(_int_slider_row("일",       1,   31, init.get("sim_day",     21), func(v): _pending["sim_day"]   = v))
 	vb.add_child(_slider_row("시간(현지)", 0.0, 24.0,    init.get("time_of_day",   12.0),    func(v): _pending["time_of_day"]  = v))
 
 	var rt_check := CheckBox.new()
@@ -279,7 +285,32 @@ func _build_all(init: Dictionary) -> void:
 	rt_check.toggled.connect(func(p): _pending["real_time_mode"] = p)
 	vb.add_child(rt_check)
 
-	vb.add_child(_slider_row("하루 길이(초)", 5.0, 600.0, init.get("day_length_sec", 120.0), func(v): _pending["day_length_sec"] = v))
+	var dl_init: float = init.get("day_length_sec", 120.0)
+	var dl_vbox := VBoxContainer.new()
+	dl_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var dl_lbl := Label.new()
+	dl_lbl.add_theme_font_size_override("font_size", _fs)
+	dl_lbl.text = _speed_text(dl_init)
+	dl_vbox.add_child(dl_lbl)
+	var dl_sl := HSlider.new()
+	dl_sl.min_value             = 5.0
+	dl_sl.max_value             = 600.0
+	dl_sl.step                  = (600.0 - 5.0) / 500.0
+	dl_sl.value                 = clampf(dl_init, 5.0, 600.0)
+	dl_sl.custom_minimum_size   = Vector2(0, _slider_h)
+	dl_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dl_sl.value_changed.connect(func(v):
+		_pending["day_length_sec"] = v
+		dl_lbl.text = _speed_text(v))
+	dl_vbox.add_child(dl_sl)
+	var realspeed_btn := Button.new()
+	realspeed_btn.text = "실제 속도 (1:1)"
+	realspeed_btn.add_theme_font_size_override("font_size", fs_ctrl)
+	realspeed_btn.pressed.connect(func():
+		_pending["day_length_sec"] = 86400.0
+		dl_lbl.text = _speed_text(86400.0))
+	dl_vbox.add_child(realspeed_btn)
+	vb.add_child(dl_vbox)
 
 	var view_row   := HBoxContainer.new()
 	var view_group := ButtonGroup.new()
@@ -346,6 +377,31 @@ func _labeled(text: String, control: Control) -> Control:
 	box.add_child(l)
 	box.add_child(control)
 	return box
+
+func _int_slider_row(text: String, lo: int, hi: int, val: int, on_change: Callable) -> Control:
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var l := Label.new()
+	l.text = "%s: %d" % [text, val]
+	l.add_theme_font_size_override("font_size", _fs)
+	box.add_child(l)
+	var sl := HSlider.new()
+	sl.min_value             = float(lo)
+	sl.max_value             = float(hi)
+	sl.step                  = 1.0
+	sl.value                 = float(val)
+	sl.custom_minimum_size   = Vector2(0, _slider_h)
+	sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sl.value_changed.connect(func(v):
+		on_change.call(int(v))
+		l.text = "%s: %d" % [text, int(v)])
+	box.add_child(sl)
+	return box
+
+static func _speed_text(day_sec: float) -> String:
+	if day_sec >= 86000.0:
+		return "하루 길이: 86400초/일 (실제속도 1×)"
+	return "하루 길이: %.0f초/일 (%.0f×)" % [day_sec, 86400.0 / max(day_sec, 0.01)]
 
 func _slider_row(text: String, lo: float, hi: float, val: float, on_change: Callable) -> Control:
 	var box := VBoxContainer.new()

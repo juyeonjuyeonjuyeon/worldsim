@@ -107,3 +107,100 @@ static func moon_state(year: int, month: int, day: int, hour_utc: float, lat_deg
 	var phase_angle: float = 180.0 - d
 	var k: float = (1.0 + cos(phase_angle * DEG2RAD)) / 2.0
 	return {"alt": altaz.x, "az": altaz.y, "illum": clampf(k, 0.0, 1.0)}
+
+## 행성 위치·등급 — Meeus "Astronomical Algorithms" 저정밀 궤도 요소 기반 (정밀도 ~0.3°)
+## planet: "mercury"|"venus"|"mars"|"jupiter"|"saturn"|"uranus"|"neptune"
+## 반환: {"alt", "az", "mag", "ra", "dec"}
+static func planet_state(planet: String, year: int, month: int, day: int,
+		hour_utc: float, lat_deg: float, lon_deg: float) -> Dictionary:
+	var jd: float = julian_day(year, month, day, hour_utc)
+	var t: float  = (jd - 2451545.0) / 36525.0
+
+	# 궤도 요소 배열 [L0_c, L0_r, a, e_c, e_r, i_c, i_r, Om_c, Om_r, w_c, w_r]
+	# Meeus Table 33.a (c=상수항, r=세기당 변화율)
+	var oe: Array
+	match planet:
+		"mercury": oe=[252.250906,149474.0722491, 0.387098, 0.20563175, 0.000020407,  7.004986, 0.0018215,  48.330893,1.1861890,  77.456119,1.5564776]
+		"venus":   oe=[181.979801, 58519.2130302, 0.723330, 0.006773,  -0.000049514,  3.394662, 0.0010037,  76.679920,0.9011190, 131.563707,1.4022286]
+		"mars":    oe=[355.433275, 19141.6964746, 1.523679, 0.09340065, 0.000090484,  1.849726,-0.0006011,  49.558093,0.7720923, 336.060234,1.8410449]
+		"jupiter": oe=[ 34.351519,  3034.9056606, 5.202603, 0.048498,   0.000163,     1.303270,-0.0054966, 100.464441,1.0209550,  14.331309,1.6126682]
+		"saturn":  oe=[ 50.077444,  1222.1138488, 9.537070, 0.05415060,-0.000213,     2.488878,-0.0037363, 113.665524,0.8770970,  93.056787,1.9637613]
+		"uranus":  oe=[314.055005,   429.8640561,19.191263, 0.04716771,-0.0000019,    0.773197,-0.0016869,  74.005957,0.5211278, 173.005291,1.4863790]
+		"neptune": oe=[304.348665,   219.8833092,30.068963, 0.00858587, 0.0000251,    1.769953, 0.0002256, 131.784057,1.1022039,  48.120276,1.4262957]
+		_: return {}
+
+	var L0: float = oe[0] + oe[1] * t
+	var a_p: float= oe[2]
+	var e_p: float= oe[3] + oe[4] * t
+	var i_p: float= oe[5] + oe[6] * t
+	var Om: float = oe[7] + oe[8] * t
+	var w_p: float= oe[9] + oe[10]* t
+
+	# 평균 이각 → 편심 이각 (케플러 방정식, 뉴턴법)
+	var M_p: float = fmod(L0 - w_p, 360.0) * DEG2RAD
+	var E_p: float = M_p
+	for _i in range(10):
+		E_p = E_p - (E_p - e_p * sin(E_p) - M_p) / (1.0 - e_p * cos(E_p))
+	var nu_p: float = 2.0 * atan2(sqrt(1.0 + e_p) * sin(E_p * 0.5),
+	                               sqrt(1.0 - e_p) * cos(E_p * 0.5))
+	var r_p: float  = a_p * (1.0 - e_p * cos(E_p))
+
+	# 태양 중심 황도 직교 좌표 (행성)
+	var u_p: float  = nu_p + (w_p - Om) * DEG2RAD
+	var i_r: float  = i_p * DEG2RAD
+	var Om_r: float = Om  * DEG2RAD
+	var l_p: float  = atan2(sin(u_p) * cos(i_r), cos(u_p)) + Om_r
+	var b_p: float  = asin(clampf(sin(u_p) * sin(i_r), -1.0, 1.0))
+
+	# 지구 태양 중심 위치
+	var sun: Dictionary = _sun_geocentric(t)
+	var l_e: float = fmod(sun["true_lon"] + 180.0, 360.0) * DEG2RAD
+	var M_e: float = sun["m"] * DEG2RAD
+	var e_e: float = 0.016708617 - t * 0.000042037
+	var E_e: float = M_e
+	for _i in range(5):
+		E_e = E_e - (E_e - e_e * sin(E_e) - M_e) / (1.0 - e_e * cos(E_e))
+	var r_e: float = 1.000001018 * (1.0 - e_e * cos(E_e))
+
+	# 지심 황도 → 적도 좌표
+	var dx: float = r_p*cos(b_p)*cos(l_p) - r_e*cos(l_e)
+	var dy: float = r_p*cos(b_p)*sin(l_p) - r_e*sin(l_e)
+	var dz: float = r_p*sin(b_p)
+	var dist: float = maxf(sqrt(dx*dx + dy*dy + dz*dz), 0.001)
+	var l_g: float  = atan2(dy, dx)
+	var b_g: float  = atan2(dz, sqrt(dx*dx + dy*dy))
+	var eps: float  = sun["eps"] * DEG2RAD
+	var ra: float   = atan2(sin(l_g)*cos(eps) - tan(b_g)*sin(eps), cos(l_g)) * RAD2DEG
+	var dec: float  = asin(clampf(sin(b_g)*cos(eps) + cos(b_g)*sin(eps)*sin(l_g), -1.0, 1.0)) * RAD2DEG
+	var altaz: Vector2 = radec_to_altaz(ra, dec, gmst_deg(jd), lat_deg, lon_deg)
+
+	# 이각 (태양-행성-지구 삼각형)
+	var phi_r: float = acos(clampf((r_p*r_p + dist*dist - r_e*r_e) / (2.0*r_p*dist), -1.0, 1.0))
+	var phi_d: float = phi_r * RAD2DEG
+
+	# 등급 (Meeus Table 33.b / USNO Explanatory Supplement)
+	var dt5: float = 5.0 * log(r_p * dist) / log(10.0)
+	var mag: float
+	match planet:
+		"mercury":
+			# 다항식 위상 함수 (내행성, 위상 변화 극심)
+			mag = -0.36 + dt5 + 0.0380*phi_d - 0.000273*phi_d*phi_d + 0.000002*phi_d*phi_d*phi_d
+		"venus":
+			# Lambertian 구 — 금성은 구름으로 완전 덮여 Lambertian에 가장 가까움
+			var lv: float = (sin(phi_r) + (PI - phi_r)*cos(phi_r)) / PI
+			mag = -4.47 + dt5 - 2.5*log(maxf(lv, 1e-6)) / log(10.0)
+		"mars":
+			mag = -1.52 + dt5 + 0.016*phi_d
+		"jupiter":
+			mag = -9.395 + dt5 + 0.005*phi_d
+		"saturn":
+			# 토성환 기울기 미계산 — 환 효과 없는 구체 근사 (실제보다 ~0.5등 어두울 수 있음)
+			mag = -8.68 + dt5 + 0.044*phi_d
+		"uranus":
+			mag = -7.19 + dt5 + 0.0028*phi_d
+		"neptune":
+			mag = -6.87 + dt5 + 0.041*phi_d
+		_:
+			mag = 0.0
+
+	return {"alt": altaz.x, "az": altaz.y, "mag": mag, "ra": ra, "dec": dec}

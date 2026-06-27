@@ -109,6 +109,9 @@ func _ui_init_dict() -> Dictionary:
 		"latitude":           latitude,
 		"longitude":          longitude,
 		"utc_offset":         utc_offset,
+		"sim_year":           sim_year,
+		"sim_month":          sim_month,
+		"sim_day":            sim_day,
 		"time_of_day":        time_of_day,
 		"real_time_mode":     real_time_mode,
 		"day_length_sec":     day_length_sec,
@@ -131,6 +134,9 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	latitude           = s.get("latitude",           latitude)
 	longitude          = s.get("longitude",          longitude)
 	utc_offset         = s.get("utc_offset",         utc_offset)
+	sim_year           = int(s.get("sim_year",   sim_year))
+	sim_month          = int(s.get("sim_month",  sim_month))
+	sim_day            = int(s.get("sim_day",    sim_day))
 	time_of_day        = s.get("time_of_day",        time_of_day)
 	var new_rt: bool   = s.get("real_time_mode",     real_time_mode)
 	if new_rt != real_time_mode:

@@ -533,7 +533,7 @@ func _make_precip_particles(is_snow: bool) -> GPUParticles3D:
 		# 뷰 공간에 낙하 방향을 투영해 카메라 상하 각도에 무관하게 빗줄기 방향 유지
 		# - 수평 시야: 세로 빗줄기  - 위 볼 때: 점/원  - 아래 볼 때: 짧은 흔적
 		var qmesh := QuadMesh.new()
-		qmesh.size = Vector2(0.045, 0.45)
+		qmesh.size = Vector2(0.028, 0.62)  # 실제 빗방울 비율: 폭 2.8cm, 길이 62cm (낙하속도에 의한 잔상)
 		var rain_shader := Shader.new()
 		rain_shader.code = """
 shader_type spatial;
@@ -555,8 +555,16 @@ void vertex() {
 	POSITION = PROJECTION_MATRIX * (center_view + vec4(offset, 0.0));
 }
 void fragment() {
-	ALBEDO = vec3(0.78, 0.87, 1.0);
-	ALPHA  = 0.65 * COLOR.a;
+	// 가우시안 단면: 실제 빗방울의 원형 단면을 수직 투영한 형태
+	// 가운데 불투명, 가장자리로 갈수록 투명 (선명한 경계선 없음)
+	float cx    = UV.x - 0.5;
+	float gauss = exp(-cx * cx * 30.0);
+	// 양 끝 소멸: 빗방울 위아래 끝이 공기 속으로 흐릿하게 소멸
+	float fade  = smoothstep(0.0, 0.10, UV.y) * smoothstep(1.0, 0.90, UV.y);
+	// Mie 전방산란: 빛이 물방울을 통과할 때 청백색으로 산란됨
+	ALBEDO = vec3(0.80, 0.90, 1.0);
+	// 단일 빗방울은 매우 투명 — 여러 방울이 겹쳐 비의 밀도감이 생김
+	ALPHA  = gauss * fade * 0.40 * COLOR.a;
 }
 """
 		var rain_smat := ShaderMaterial.new()
@@ -585,6 +593,8 @@ func update(
 	sim_month: int,
 	sky_brightness: float,
 	sky_overcast: float,
+	rain_streak_scale: float,
+	snow_size_scale: float,
 	delta: float
 ) -> void:
 	var is_rain: bool = weather_type == "RAIN"
@@ -612,12 +622,13 @@ func update(
 	# 강수강도 → 입자 양·크기 (rate=0이면 파티클 없음)
 	var rain_frac: float = 0.0 if rain_rate <= 0.0 else clampf(pow(rain_rate / 50.0, 0.21), 0.15, 1.0)
 	_rain_particles.amount_ratio = rain_frac
-	var rain_size: float = 0.7 + 0.5 * rain_frac
+	# 강도에 따른 물리적 크기 변화: 강한 비일수록 빗방울이 크고 낙하속도가 빨라 잔상이 길어짐
+	var rain_size: float = (0.7 + 0.5 * rain_frac) * rain_streak_scale
 	rain_pmat.scale_min = rain_size * 0.75
 	rain_pmat.scale_max = rain_size * 1.35
 	var snow_frac: float = clampf(rain_rate / 30.0, 0.1, 1.0)
 	_snow_particles.amount_ratio = snow_frac
-	var snow_size: float = 0.6 + 0.8 * snow_frac
+	var snow_size: float = (0.6 + 0.8 * snow_frac) * snow_size_scale
 	snow_pmat.scale_min = snow_size * 0.7
 	snow_pmat.scale_max = snow_size * 1.5
 
@@ -632,16 +643,26 @@ func update(
 
 	# 지면 젖음/눈 축적
 	# 강우강도에 비례한 포화 속도: 50mm/hr 폭우 → 5분(300s), 20mm/hr → 12.5분, 2.5mm/hr → ~1.5시간
+	# 계절별 눈 녹음: 겨울(12~2월)=1시간, 초봄·늦가을=30분, 봄·가을=20분, 여름=10분
+	var snow_melt: float
+	match sim_month:
+		12, 1, 2: snow_melt = 1.0 / 3600.0
+		3, 11:    snow_melt = 1.0 / 1800.0
+		4, 10:    snow_melt = 1.0 / 1200.0
+		_:        snow_melt = 1.0 / 600.0
 	if is_rain:
 		var wet_rate: float = (rain_rate / 50.0) / 300.0
 		ground_wetness = clampf(ground_wetness + delta * wet_rate, 0.0, 1.0)
-		ground_snow    = clampf(ground_snow - delta * 0.25, 0.0, 1.0)
+		# 비는 눈을 계절 속도의 6배로 녹임 (잠열 + 수온)
+		ground_snow    = clampf(ground_snow - delta * snow_melt * 6.0, 0.0, 1.0)
 	elif is_snow:
-		ground_snow    = clampf(ground_snow + delta / 90.0, 0.0, 1.0)
-		ground_wetness = clampf(ground_wetness - delta / 300.0, 0.0, 1.0)
+		# rain_rate 비례 쌓임: 10mm/hr → 300s 포화, 폭설(50mm) → 60s, 약한 눈(2mm) → 1500s
+		var snow_rate: float = clampf(rain_rate / 10.0, 0.5, 5.0) / 300.0
+		ground_snow    = clampf(ground_snow + delta * snow_rate, 0.0, 1.0)
+		ground_wetness = clampf(ground_wetness - delta / 3600.0, 0.0, 1.0)
 	else:
-		ground_wetness = clampf(ground_wetness - delta / 300.0, 0.0, 1.0)
-		ground_snow    = clampf(ground_snow - delta * 0.25, 0.0, 1.0)
+		ground_wetness = clampf(ground_wetness - delta / 3600.0, 0.0, 1.0)
+		ground_snow    = clampf(ground_snow - delta * snow_melt, 0.0, 1.0)
 
 	# 지면 색
 	var dry_color  := Color(0.16, 0.24, 0.08)
