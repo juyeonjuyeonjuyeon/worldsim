@@ -94,6 +94,7 @@ func _ready() -> void:
 	_ui.settings_confirmed.connect(_on_settings_confirmed)
 	_ui.view_mode_requested.connect(_set_view_mode)
 	_ui.aspect_requested.connect(_set_aspect)
+	_ui.test_event_requested.connect(_on_test_event)
 	_ui.build(_ui_init_dict())
 	_update_all(0.0)
 
@@ -143,6 +144,13 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	if need_rebuild:
 		_ui.build(_ui_init_dict())
 	_update_all(0.0)
+
+func _on_test_event(event_name: String) -> void:
+	match event_name:
+		"lightning": _sound.trigger_lightning()
+		"meteor":    _sky.trigger_meteor(false)
+		"shower":    _sky.trigger_meteor(true)
+		"comet":     _sky.trigger_comet_test()
 
 func _set_view_mode(mode: String) -> void:
 	_camera.set_view_mode(mode)

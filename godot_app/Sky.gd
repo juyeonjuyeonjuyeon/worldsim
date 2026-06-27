@@ -152,6 +152,7 @@ var _meteor_len:  float    = 20.0     # 꼬리 최대 길이 (sky dome 단위)
 var _meteor_color: Color   = Color.WHITE
 var _shower_intensity: float  = 0.0        # 현재 유성우 강도 (0=없음, 1=피크)
 var _shower_radiant:  Vector3 = Vector3.UP # 복사점 방향 (단위 벡터)
+var _comet_test_mode: bool    = false      # 테스트 버튼으로 혜성 강제 표시
 var _comet_nuc_inst:  MeshInstance3D       # 혜성 핵
 var _comet_nuc_mat:   ShaderMaterial
 var _comet_ion_mesh:  ImmediateMesh        # 이온 꼬리 (청백, 직선)
@@ -172,6 +173,25 @@ func build() -> void:
 	_build_bolt()
 	_build_meteor()
 	_build_comet()
+
+# ── 외부 트리거 (테스트 버튼용) ──────────────────────────────────────
+func trigger_meteor(shower_mode: bool = false) -> void:
+	if shower_mode:
+		_shower_intensity = 0.80
+		# 페르세우스자리 복사점 근사 (alt≈58°, az≈46°)
+		_shower_radiant   = _altaz_to_dir(58.0, 46.0)
+	else:
+		_shower_intensity = 0.0
+	_spawn_meteor()
+	_draw_meteor()
+	_meteor_inst.visible = true
+
+func trigger_comet_test() -> void:
+	_comet_test_mode = not _comet_test_mode
+	if not _comet_test_mode:
+		_comet_nuc_inst.visible  = false
+		_comet_ion_inst.visible  = false
+		_comet_dust_inst.visible = false
 
 func _load_star_catalog() -> void:
 	var f := FileAccess.open("res://stars.json", FileAccess.READ)
@@ -1052,7 +1072,49 @@ void fragment() { ALBEDO = COLOR.rgb; ALPHA = COLOR.a; }
 	_comet_dust_inst.visible = false
 	add_child(_comet_dust_inst)
 
+func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
+	_comet_nuc_inst.global_position = cpos
+	_comet_nuc_mat.set_shader_parameter("brightness", clampf(bright * 1.5, 0.0, 3.0))
+	_comet_nuc_inst.visible = true
+	var r: float          = 395.0
+	var sun3: Vector3     = _altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
+	var away: Vector3     = -sun3
+	var ion_len: float    = r * deg_to_rad(18.0) * bright
+	var orb_perp: Vector3 = away.cross(cpos.normalized()).normalized()
+	var dust_dir: Vector3 = (away + orb_perp * 0.3).normalized()
+	var dust_len: float   = ion_len * 0.80
+	_comet_ion_mesh.clear_surfaces()
+	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	const NT: int = 16
+	for i in range(NT):
+		var t0: float = float(i)     / NT
+		var t1: float = float(i + 1) / NT
+		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, (1.0 - t0) * bright))
+		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t0)
+		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, (1.0 - t1) * bright))
+		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t1)
+	_comet_ion_mesh.surface_end()
+	_comet_ion_inst.visible = true
+	_comet_dust_mesh.clear_surfaces()
+	_comet_dust_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	var spread: Vector3 = dust_dir.cross(cpos.normalized()).normalized()
+	for lane in range(-2, 3):
+		var ofs: Vector3 = spread * float(lane) * 2.0
+		for i in range(NT):
+			var t0: float = float(i)     / NT
+			var t1: float = float(i + 1) / NT
+			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, (1.0 - t0) * bright * 0.11))
+			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t0 + ofs * t0)
+			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, (1.0 - t1) * bright * 0.11))
+			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t1 + ofs * t1)
+	_comet_dust_mesh.surface_end()
+	_comet_dust_inst.visible = true
+
 func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude: float, longitude: float) -> void:
+	# 테스트 모드: 고도 45°, 정남 방향에 밝은 혜성 강제 표시
+	if _comet_test_mode:
+		_draw_comet(_altaz_to_dir(45.0, 180.0) * 395.0, sun_altaz, 1.0)
+		return
 	var jd:   float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 	var gmst: float = Astronomy.gmst_deg(jd)
 	# ── 혜성 위치 보간 ─────────────────────────────────────────────────
@@ -1094,50 +1156,8 @@ func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude
 		return
 	var r: float      = 395.0
 	var cpos: Vector3 = _altaz_to_dir(ca.x, ca.y) * r
-	_comet_nuc_inst.global_position = cpos
 	var bright: float = clampf((5.5 - comet_mag) / 5.5, 0.0, 1.0)
-	_comet_nuc_mat.set_shader_parameter("brightness", bright * 1.5)
-	_comet_nuc_inst.visible = true
-	# ── 꼬리 방향: 태양 반대 ────────────────────────────────────────────
-	var sun3: Vector3    = _altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
-	var away: Vector3    = -sun3  # 태양→혜성 방향 반대
-	var ion_len: float   = r * deg_to_rad(18.0) * bright  # 이온 꼬리: 최대 18°
-	# 먼지 꼬리: 공전 속도로 약간 굽음, 길이 이온 꼬리의 80%
-	var orb_perp: Vector3 = away.cross(cpos.normalized()).normalized()
-	var dust_dir: Vector3 = (away + orb_perp * 0.3).normalized()
-	var dust_len: float   = ion_len * 0.80
-	# ── 이온 꼬리 렌더 (청백 단일 선, 16세그) ────────────────────────────
-	_comet_ion_mesh.clear_surfaces()
-	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	const NT: int = 16
-	for i in range(NT):
-		var t0: float   = float(i)     / NT
-		var t1: float   = float(i + 1) / NT
-		var a0: float   = (1.0 - t0) * bright
-		var a1: float   = (1.0 - t1) * bright
-		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, a0))
-		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t0)
-		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, a1))
-		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t1)
-	_comet_ion_mesh.surface_end()
-	_comet_ion_inst.visible = true
-	# ── 먼지 꼬리 렌더 (황백 5평행선, 넓이 표현) ─────────────────────────
-	_comet_dust_mesh.clear_surfaces()
-	_comet_dust_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	var spread: Vector3 = dust_dir.cross(cpos.normalized()).normalized()
-	for lane in range(-2, 3):
-		var ofs: Vector3 = spread * float(lane) * 2.0
-		for i in range(NT):
-			var t0: float   = float(i)     / NT
-			var t1: float   = float(i + 1) / NT
-			var a0: float   = (1.0 - t0) * bright * 0.55 * 0.2  # 5선이므로 /5
-			var a1: float   = (1.0 - t1) * bright * 0.55 * 0.2
-			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, a0))
-			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t0 + ofs * t0)
-			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, a1))
-			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t1 + ofs * t1)
-	_comet_dust_mesh.surface_end()
-	_comet_dust_inst.visible = true
+	_draw_comet(cpos, sun_altaz, bright)
 
 # ── 수학 헬퍼 (static) ───────────────────────────────────────────────
 static func _altaz_to_dir(alt_deg: float, az_deg: float) -> Vector3:

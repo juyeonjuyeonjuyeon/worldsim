@@ -54,6 +54,17 @@ func build() -> void:
 	_wind_player.play()
 	_snow_player.play()
 
+func trigger_lightning() -> void:
+	_flash_distance        = randf_range(0.4, 2.5)
+	lightning_bolt_dist_km = _flash_distance
+	var dist_f: float      = clampf(_flash_distance / 6.0, 0.0, 1.0)
+	_pending_thunder_in    = _flash_distance * 1000.0 / 343.0
+	_pending_thunder_volume = clampf(1.4 - dist_f * 1.1, 0.15, 1.3)
+	_restrike_count        = randi_range(1, 3)
+	_restrike_timer        = randf_range(0.05, 0.10)
+	_flash_decay_t         = 0.0
+	lightning_flash_intensity = clampf(1.2 - _flash_distance / 7.0, 0.20, 1.0)
+
 func update(weather_type: String, wind_enabled: bool, wind_speed: float, rain_rate: float, delta: float) -> void:
 	_update_rain(weather_type, wind_enabled, wind_speed, rain_rate, delta)
 	_update_thunder(weather_type, rain_rate, delta)

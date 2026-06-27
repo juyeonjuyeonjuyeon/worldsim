@@ -4,6 +4,7 @@ extends CanvasLayer
 signal settings_confirmed(s: Dictionary)
 signal view_mode_requested(mode: String)
 signal aspect_requested(ratio: String)
+signal test_event_requested(event_name: String)
 
 const _CFG := "user://window_state.cfg"
 
@@ -203,6 +204,9 @@ func _build_all(init: Dictionary) -> void:
 		"time_of_day":        init.get("time_of_day",        12.0),
 		"real_time_mode":     init.get("real_time_mode",     false),
 		"day_length_sec":     init.get("day_length_sec",     120.0),
+		"rain_streak_scale":    init.get("rain_streak_scale",    1.0),
+		"snow_size_scale":      init.get("snow_size_scale",      1.0),
+		"show_constellations":  init.get("show_constellations",  false),
 	}
 
 	# ── 설정 컨트롤 ─────────────────────────────────────────
@@ -221,20 +225,36 @@ func _build_all(init: Dictionary) -> void:
 	var rain_row := _slider_row("강수강도", 0.5, 60.0,
 		init.get("rain_rate", 20.0), func(v): _pending["rain_rate"] = v)
 	vb.add_child(rain_row)
+	var rain_streak_row := _slider_row("빗줄기 크기", 0.3, 2.5,
+		init.get("rain_streak_scale", 1.0), func(v): _pending["rain_streak_scale"] = v)
+	vb.add_child(rain_streak_row)
+	var snow_size_row := _slider_row("눈송이 크기", 0.3, 2.5,
+		init.get("snow_size_scale", 1.0), func(v): _pending["snow_size_scale"] = v)
+	vb.add_child(snow_size_row)
 	var overcast_row := _slider_row("흐림 정도", 0.0, 1.0,
 		init.get("overcast_intensity", 0.6), func(v): _pending["overcast_intensity"] = v)
 	vb.add_child(overcast_row)
 
 	var refresh_rows := func():
 		var wt: String = _pending.get("weather_type", "CLEAR")
-		rain_row.visible    = wt == "RAIN" or wt == "SNOW"
-		overcast_row.visible = wt == "OVERCAST"
+		rain_row.visible        = wt == "RAIN" or wt == "SNOW"
+		rain_streak_row.visible = wt == "RAIN"
+		snow_size_row.visible   = wt == "SNOW"
+		overcast_row.visible    = wt == "OVERCAST"
 	weather_opt.item_selected.connect(func(idx):
 		_pending["weather_type"] = weather_opt.get_item_text(idx)
 		refresh_rows.call())
 	refresh_rows.call()
 
 	var check_h: int = maxi(24, int(fs_ctrl * 1.6))
+
+	var const_check := CheckBox.new()
+	const_check.text = "별자리 선 표시"
+	const_check.button_pressed = init.get("show_constellations", false)
+	const_check.add_theme_font_size_override("font_size", fs_ctrl)
+	const_check.custom_minimum_size = Vector2(0, check_h)
+	const_check.toggled.connect(func(p): _pending["show_constellations"] = p)
+	vb.add_child(const_check)
 
 	var wind_check := CheckBox.new()
 	wind_check.text = "바람"
@@ -295,6 +315,24 @@ func _build_all(init: Dictionary) -> void:
 	btn_ok.add_theme_font_size_override("font_size", fs_ctrl)
 	btn_ok.pressed.connect(func(): settings_confirmed.emit(_pending.duplicate()))
 	vb.add_child(btn_ok)
+
+	# ── 테스트 버튼 ──────────────────────────────────────────
+	vb.add_child(HSeparator.new())
+	var test_lbl := Label.new()
+	test_lbl.text = "테스트"
+	test_lbl.add_theme_font_size_override("font_size", _fs)
+	vb.add_child(test_lbl)
+	var test_row := HBoxContainer.new()
+	test_row.add_theme_constant_override("separation", maxi(2, int(4 * s)))
+	for pair: Array in [["번개", "lightning"], ["별똥별", "meteor"], ["유성우", "shower"], ["혜성 토글", "comet"]]:
+		var tbtn := Button.new()
+		tbtn.text = pair[0]
+		tbtn.add_theme_font_size_override("font_size", fs_ctrl)
+		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var ename: String = pair[1]
+		tbtn.pressed.connect(func(): test_event_requested.emit(ename))
+		test_row.add_child(tbtn)
+	vb.add_child(test_row)
 
 	settings_btn.pressed.connect(func(): panel.visible = not panel.visible)
 
