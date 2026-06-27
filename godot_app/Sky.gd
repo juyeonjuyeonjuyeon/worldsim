@@ -215,6 +215,12 @@ func _build_sky_and_lights() -> void:
 	env.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
 	_sky_mat = ProceduralSkyMaterial.new()
+	# 기본값 30°는 비현실적으로 큰 글로우를 만들고 부분 구름(cirrus/cumulus)이
+	# blend_mix로 글로우 일부를 감쇠시켜 검정 후광처럼 보이게 함.
+	# 실제 태양 오레올(aureole): 대기 산란으로 약 5-10° 이내에서만 유의미하게 밝음.
+	# sun_curve=0.1: 급격한 감쇠로 글로우를 태양 원반(0.53°) 근처에 집중
+	_sky_mat.sun_angle_max = 8.0
+	_sky_mat.sun_curve     = 0.1
 	sky.sky_material = _sky_mat
 	env.sky = sky
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
@@ -438,7 +444,7 @@ func _build_clouds() -> void:
 	var shader := Shader.new()
 	shader.code = """
 shader_type spatial;
-render_mode blend_mix, depth_draw_opaque, cull_disabled, unshaded;
+render_mode blend_mix, depth_draw_never, cull_disabled, unshaded;
 uniform float coverage     : hint_range(0.0, 1.0)  = 0.4;
 uniform float density      : hint_range(0.0, 1.0)  = 0.5;
 uniform float noise_scale  : hint_range(0.5, 30.0) = 6.0;
