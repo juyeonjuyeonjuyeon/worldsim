@@ -35,6 +35,9 @@ var overcast_intensity: float = 0.6
 var wind_enabled: bool = true
 var wind_speed: float = 1.6
 var wind_direction: float = 0.0   # 나침반 방위각(0=북, 90=동, 180=남, 270=서)
+var rain_streak_scale: float  = 1.0
+var snow_size_scale: float    = 1.0
+var show_constellations: bool = false
 var latitude: float = 37.5665
 var longitude: float = 126.9780
 var utc_offset: float = 9.0
@@ -109,6 +112,9 @@ func _ui_init_dict() -> Dictionary:
 		"real_time_mode":     real_time_mode,
 		"day_length_sec":     day_length_sec,
 		"view_mode":          _camera.view_mode,
+		"rain_streak_scale":     rain_streak_scale,
+		"snow_size_scale":       snow_size_scale,
+		"show_constellations":   show_constellations,
 	}
 
 func _on_settings_confirmed(s: Dictionary) -> void:
@@ -130,6 +136,9 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 		real_time_mode = new_rt
 		elapsed_play_seconds = 0.0
 	day_length_sec     = s.get("day_length_sec",     day_length_sec)
+	rain_streak_scale    = s.get("rain_streak_scale",    rain_streak_scale)
+	snow_size_scale      = s.get("snow_size_scale",      snow_size_scale)
+	show_constellations  = s.get("show_constellations",  show_constellations)
 	_ui.save_state(get_window())
 	if need_rebuild:
 		_ui.build(_ui_init_dict())
@@ -161,16 +170,19 @@ func _update_all(delta: float) -> void:
 	var moon: Dictionary = Astronomy.moon_state(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
 	var cloud_props: Dictionary = _weather_cloud_props()
 
+	_sky.show_constellations = show_constellations
 	_sky.update(
 		sun_altaz, moon, cloud_props,
-		weather_type, wind_speed, wind_enabled,
-		_sound.lightning_flash_remaining,
+		weather_type, wind_speed, wind_direction, wind_enabled,
+		_sound.lightning_flash_intensity,
+		_sound.lightning_bolt_dist_km,
 		dt, hour_utc, latitude, longitude, delta)
 
 	_env.update(
 		weather_type, rain_rate, wind_speed, wind_direction, wind_enabled,
 		cloud_props, sim_month,
 		_sky.sky_brightness_safe, _sky.sky_overcast_amt_current,
+		rain_streak_scale, snow_size_scale,
 		delta)
 
 	_sound.update(weather_type, wind_enabled, wind_speed, rain_rate, delta)
