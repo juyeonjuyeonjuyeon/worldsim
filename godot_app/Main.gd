@@ -62,12 +62,14 @@ var ground_mist: MeshInstance3D
 var ground_mist_mat: StandardMaterial3D
 var leaf_mats: Array = []
 var leaf_base_colors: Array = []
+var leaf_snow_caps: Array = []
 var tree_sway_pivots: Array = []
 var tree_sway_phase: Array = []
 var tree_sway_freq: Array = []
 var sway_time: float = 0.0
 var ground_wetness: float = 0.0
 var ground_snow: float = 0.0
+var snow_ground_mesh: MeshInstance3D
 var puddle_nodes: Array = []
 var puddle_max_r: Array = []
 var sky_brightness_safe: float = 1.0
@@ -108,6 +110,7 @@ func _ready() -> void:
 	randomize()
 	_load_star_catalog()
 	_build_ground()
+	_build_snow_accumulation()
 	_build_ground_mist()
 	_build_trees()
 	_build_puddles()
@@ -180,6 +183,22 @@ func _build_ground() -> void:
 	horizon.position.y = -0.01  # z-fighting 방지용 최소 오프셋만(이전 -0.05는 단차로 보일 만큼 컸음)
 	horizon.material_override = ground_mat
 	add_child(horizon)
+
+func _build_snow_accumulation() -> void:
+	# 눈이 쌓일수록 지면에서 위로 두껍게 솟아오르는 BoxMesh.
+	# size.y=0.5(최대 50cm), position.y와 scale.y를 ground_snow에 따라
+	# 같이 조정해 아랫면이 항상 y=0에 붙어 있게 함(수식은 _update_weather_visual 참고).
+	snow_ground_mesh = MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(800, 0.5, 800)
+	snow_ground_mesh.mesh = box
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.92, 0.94, 0.97)
+	mat.roughness = 0.9
+	mat.metallic_specular = 0.04
+	snow_ground_mesh.material_override = mat
+	snow_ground_mesh.visible = false
+	add_child(snow_ground_mesh)
 
 func _build_ground_mist() -> void:
 	# 버그였던 부분(밤에 구름이 없어 보이고, 비 오는 저녁 하늘뷰에서 별이
@@ -255,6 +274,24 @@ func _make_tree(x: float, z: float, scale_: float, seed_: int) -> void:
 		pivot.add_child(leaf)
 		leaf_mats.append(lmat)
 		leaf_base_colors.append(leaf_color)
+		# 눈 쌓임 캡 — 구체 위에 얹히는 납작한 disc. visible/scale.y는
+		# _update_weather_visual에서 ground_snow에 따라 매 프레임 갱신됨.
+		var snow_cap := MeshInstance3D.new()
+		var cap_cyl := CylinderMesh.new()
+		cap_cyl.top_radius = cr * 0.65
+		cap_cyl.bottom_radius = cr * 0.80
+		cap_cyl.height = cr * 0.45
+		cap_cyl.rings = 1
+		snow_cap.mesh = cap_cyl
+		snow_cap.position = Vector3(0, cr * 0.72, 0)
+		var cap_mat := StandardMaterial3D.new()
+		cap_mat.albedo_color = Color(0.92, 0.94, 0.97)
+		cap_mat.roughness = 0.9
+		cap_mat.metallic_specular = 0.04
+		snow_cap.material_override = cap_mat
+		snow_cap.visible = false
+		leaf.add_child(snow_cap)
+		leaf_snow_caps.append(snow_cap)
 
 func _build_trees() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -509,18 +546,17 @@ func _build_ui() -> void:
 	var panel := Panel.new()
 	panel.position = Vector2(10, 10)
 	panel.size = Vector2(300, 560)
+	panel.clip_contents = true  # 자식 컨트롤이 패널 경계 밖으로 렌더링되지 않게 클리핑
 	layer.add_child(panel)
 
-	# 패널을 고정 크기로 두고 안의 VBox가 그보다 길어지면(날씨별로 보이는
-	# 줄 개수가 달라서 항목이 늘어날 때) 그냥 패널 밖으로 넘쳐 잘려 보이던
-	# 문제 — ScrollContainer로 감싸서 넘치면 스크롤되게 함(항상 패널 안에
-	# 깔끔하게 들어감).
 	var scroll := ScrollContainer.new()
 	scroll.position = Vector2(5, 5)
 	scroll.size = Vector2(290, 550)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED  # 수평 스크롤 차단 — 슬라이더가 오른쪽으로 밀려 패널 밖에서 조작해야 하던 원인
 	panel.add_child(scroll)
 	var vb := VBoxContainer.new()
 	vb.custom_minimum_size = Vector2(270, 0)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL  # ScrollContainer 너비에 맞게 늘어나야 내부 슬라이더가 올바른 너비를 가짐
 	scroll.add_child(vb)
 
 	var weather_opt := OptionButton.new()
@@ -632,6 +668,7 @@ func _set_aspect(ratio: String) -> void:
 
 func _labeled(_parent: Control, text: String, control: Control) -> Control:
 	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var l := Label.new()
 	l.text = text
 	box.add_child(l)
@@ -640,6 +677,7 @@ func _labeled(_parent: Control, text: String, control: Control) -> Control:
 
 func _slider_row(_parent: Control, text: String, lo: float, hi: float, val: float, on_change: Callable) -> Control:
 	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var l := Label.new()
 	l.text = "%s: %.2f" % [text, val]
 	box.add_child(l)
@@ -648,7 +686,8 @@ func _slider_row(_parent: Control, text: String, lo: float, hi: float, val: floa
 	s.max_value = hi
 	s.step = (hi - lo) / 500.0
 	s.value = val
-	s.custom_minimum_size = Vector2(240, 20)
+	s.custom_minimum_size = Vector2(0, 20)
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL  # 고정 240px 대신 부모 너비에 맞춰 늘어남 — 슬라이더가 패널 밖으로 삐져나오던 원인
 	s.value_changed.connect(func(v):
 		on_change.call(v)
 		l.text = "%s: %.2f" % [text, v])
@@ -1074,6 +1113,20 @@ func _update_weather_visual(delta: float) -> void:
 		var base: Color = leaf_base_colors[i]
 		var m: StandardMaterial3D = leaf_mats[i]
 		m.albedo_color = base.lerp(snow_color, ground_snow)
+
+	# 나뭇잎 위 눈 쌓임 캡 — ground_snow에 비례해 두껍게 부풀어 오름.
+	for cap in leaf_snow_caps:
+		cap.visible = ground_snow > 0.02
+		if cap.visible:
+			cap.scale.y = clampf(ground_snow, 0.05, 1.0)
+
+	# 지면 눈더미 입체 메쉬.
+	# BoxMesh size.y = 0.5, scale.y = ground_snow → 실제 높이 = 0.5*ground_snow.
+	# 아랫면을 y=0에 고정하려면 position.y = 0.5/2 * ground_snow = 0.25*ground_snow.
+	snow_ground_mesh.visible = ground_snow > 0.01
+	if snow_ground_mesh.visible:
+		snow_ground_mesh.scale.y = ground_snow
+		snow_ground_mesh.position.y = 0.25 * ground_snow
 
 	# 웅덩이 — 비가 와서 젖은 만큼만 차오르고(ground_wetness), 눈이 덮이면
 	# (ground_snow) 안 보이게. 항상 고정 크기로 떠 있던 버그 수정.
