@@ -283,11 +283,12 @@ void fragment() {
 	_moon_mesh.material_override = _moon_shader_mat
 	add_child(_moon_mesh)
 
-	# 태양 원반 — 뷰 공간 빌보드 쿼드, 거리 100m, 실제 태양 시각도 ~0.53° 재현
-	# 빌보드 정점 셰이더로 항상 카메라를 향함. blend_add로 하늘 색에 합산.
+	# 태양 원반 — 뷰 공간 빌보드 쿼드, 거리 100m
+	# disc 반경 = 0.41 × quad_size = 0.41 × 1.12 = 0.459m → 각지름 ≈ 0.527°
+	# 달(SphereMesh r=0.46, 거리 100m → 0.527°)과 동일 → 개기일식 크기 재현
 	_sun_mesh = MeshInstance3D.new()
 	var sun_quad := QuadMesh.new()
-	sun_quad.size = Vector2(0.9, 0.9)
+	sun_quad.size = Vector2(1.12, 1.12)
 	_sun_mesh.mesh = sun_quad
 	var sun_shader := Shader.new()
 	sun_shader.code = """
@@ -304,7 +305,7 @@ void vertex() {
 
 void fragment() {
 	float d     = length(UV - vec2(0.5)) * 2.0;
-	// 원반: quad 안쪽 82% 영역이 실제 태양 원반, 0.9m quad에서 시각도 ~0.47°
+	// 원반: quad 안쪽 82% 영역이 실제 태양 원반, 1.12m quad에서 시각도 ~0.53°
 	float disc  = 1.0 - smoothstep(0.82, 0.96, d);
 	// 코로나 글로우: 빠르게 감쇠해 과도한 bloom 방지
 	float glow  = exp(-d * 4.5) * 0.18;
