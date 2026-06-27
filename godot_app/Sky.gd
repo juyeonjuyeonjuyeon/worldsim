@@ -110,6 +110,15 @@ var _bolt_mat:  ShaderMaterial
 var _bolt_segs: Array      = []        # [[Vector3, Vector3], ...] 세그먼트 목록
 var _prev_lightning: float = 0.0      # 섬광 상승 엣지 감지용
 var _bolt_az: float        = 0.0      # 현재 볼트 방위각 (도)
+var _meteor_mesh: ImmediateMesh        # 별똥별 궤적 선분
+var _meteor_inst: MeshInstance3D
+var _meteor_next: float    = 30.0     # 다음 유성 대기 시간 (초)
+var _meteor_t:    float    = -1.0     # 현재 유성 진행도 (-1=비활성)
+var _meteor_dur:  float    = 0.3      # 현재 유성 지속시간
+var _meteor_head: Vector3  = Vector3.ZERO
+var _meteor_dir:  Vector3  = Vector3.DOWN
+var _meteor_len:  float    = 20.0     # 꼬리 최대 길이 (sky dome 단위)
+var _meteor_color: Color   = Color.WHITE
 var _star_data: Array = []
 var _current_exposure: float = 1.0  # 노출 스무딩 상태 (프레임 간 급격한 변화 방지)
 
@@ -122,6 +131,7 @@ func build() -> void:
 	_build_constellations()
 	_build_clouds()
 	_build_bolt()
+	_build_meteor()
 
 func _load_star_catalog() -> void:
 	var f := FileAccess.open("res://stars.json", FileAccess.READ)
@@ -467,6 +477,7 @@ func update(
 	_update_planets(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_constellations(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_bolt(lightning_flash, lightning_bolt_dist_km)
+	_update_meteor(sun_altaz, cloud_props, delta)
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
 
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
@@ -809,6 +820,101 @@ func _update_bolt(lightning_flash: float, dist_km: float) -> void:
 	else:
 		_bolt_inst.visible = false
 	_prev_lightning = lightning_flash
+
+# ── 별똥별 ───────────────────────────────────────────────────────────
+func _build_meteor() -> void:
+	_meteor_mesh = ImmediateMesh.new()
+	_meteor_inst = MeshInstance3D.new()
+	_meteor_inst.mesh = _meteor_mesh
+	_meteor_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var s := Shader.new()
+	s.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, blend_add, depth_draw_never;
+void fragment() {
+\tALBEDO = COLOR.rgb;
+\tALPHA  = COLOR.a;
+}
+"""
+	var mat := ShaderMaterial.new()
+	mat.shader = s
+	_meteor_inst.material_override = mat
+	_meteor_inst.visible = false
+	add_child(_meteor_inst)
+
+func _spawn_meteor() -> void:
+	# 하늘의 무작위 위치에서 시작
+	var az:  float = randf_range(0.0, 360.0)
+	var alt: float = randf_range(25.0, 75.0)
+	var r:   float = 395.0  # 별 안쪽 sky dome
+	_meteor_head = _altaz_to_dir(alt, az) * r
+	# 이동 방향: 천정 반대 방향(아래) + 측면 성분 → 비스듬한 궤적
+	var down: Vector3 = -_meteor_head.normalized()
+	var side: Vector3 = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)).normalized()
+	_meteor_dir = (down * randf_range(0.6, 1.0) + side * randf_range(0.1, 0.6)).normalized()
+	# 궤적 길이: 시야각 8~28° → dome 위 실제 호 거리
+	_meteor_len = r * deg_to_rad(randf_range(8.0, 28.0))
+	# 지속시간: 0.15~0.55초 (밝고 느린 화구는 길게)
+	_meteor_dur = randf_range(0.15, 0.55)
+	# 색: 주로 황백, 일부 청백(고속), 일부 주황(저속 Fe)
+	var roll: float = randf()
+	if roll < 0.15:
+		_meteor_color = Color(0.70, 0.85, 1.00)   # 청백 (Mg/Ca, 고속)
+	elif roll < 0.25:
+		_meteor_color = Color(1.00, 0.72, 0.38)   # 주황 (Fe, 저속)
+	else:
+		_meteor_color = Color(1.00, 0.97, 0.88)   # 황백 (일반)
+	_meteor_t = 0.0
+
+func _draw_meteor() -> void:
+	_meteor_mesh.clear_surfaces()
+	_meteor_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	# 머리 위치: t에 따라 이동
+	var head: Vector3   = _meteor_head + _meteor_dir * _meteor_len * _meteor_t
+	# 꼬리 길이: 전체 궤적의 35%
+	var tail_len: float = _meteor_len * 0.35
+	# 생애 sin 페이드: 시작·끝 부드럽게
+	var fade: float = sin(clampf(_meteor_t * PI, 0.0, PI))
+	const N: int = 10
+	for i in range(N):
+		var t0: float   = float(i)     / N
+		var t1: float   = float(i + 1) / N
+		var p0: Vector3 = head - _meteor_dir * tail_len * t0
+		var p1: Vector3 = head - _meteor_dir * tail_len * t1
+		# 머리(t0=0)→꼬리(t0=1) 방향으로 alpha 감소
+		var a0: float = (1.0 - t0) * fade
+		var a1: float = (1.0 - t1) * fade
+		_meteor_mesh.surface_set_color(Color(_meteor_color.r, _meteor_color.g, _meteor_color.b, a0))
+		_meteor_mesh.surface_add_vertex(p0)
+		_meteor_mesh.surface_set_color(Color(_meteor_color.r, _meteor_color.g, _meteor_color.b, a1))
+		_meteor_mesh.surface_add_vertex(p1)
+	_meteor_mesh.surface_end()
+	_meteor_inst.visible = true
+
+func _update_meteor(sun_altaz: Vector2, cloud_props: Dictionary, delta: float) -> void:
+	# 별 가시성 계산 (별·별자리와 동일 공식)
+	var night_blend: float = clampf(-sun_altaz.x / 6.0, 0.0, 1.0)
+	var star_vis: float    = night_blend * (1.0 - cloud_props["okta"])
+	if star_vis < 0.15:
+		_meteor_inst.visible = false
+		_meteor_t = -1.0
+		return
+	# 진행 중인 유성 업데이트
+	if _meteor_t >= 0.0:
+		_meteor_t += delta / max(_meteor_dur, 0.01)
+		if _meteor_t >= 1.0:
+			_meteor_t = -1.0
+			_meteor_inst.visible = false
+		else:
+			_draw_meteor()
+		return
+	# 다음 유성 대기
+	_meteor_next -= delta
+	if _meteor_next <= 0.0:
+		_spawn_meteor()
+		# 산발 유성: 맑은 밤 시간당 5~8개 → 화면 시간 20~60초 간격
+		# star_vis 높을수록 자주 (어두운 하늘일수록 많이 보임)
+		_meteor_next = randf_range(20.0, 60.0) / max(star_vis, 0.1)
 
 # ── 수학 헬퍼 (static) ───────────────────────────────────────────────
 static func _altaz_to_dir(alt_deg: float, az_deg: float) -> Vector3:
