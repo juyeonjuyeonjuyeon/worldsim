@@ -1184,8 +1184,9 @@ static func _day_of_year(month: int, day: int) -> int:
 # ── 혜성 ─────────────────────────────────────────────────────────────
 func _build_comet() -> void:
 	# 핵: billboard QuadMesh + 방사형 글로우
+	# 6×6: 밝은 핵 FWHM≈0.34°, 코마 직경≈0.73° (Hale-Bopp 급 밝은 혜성 기준)
 	var quad := QuadMesh.new()
-	quad.size = Vector2(10.0, 10.0)
+	quad.size = Vector2(6.0, 6.0)
 	_comet_nuc_inst = MeshInstance3D.new()
 	_comet_nuc_inst.mesh = quad
 	_comet_nuc_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -1266,8 +1267,8 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 
 	# ── 이온 꼬리: 청백색 테이퍼 리본 ─────────────────────────────────
 	# UV.y: 1=+가장자리, 0=-가장자리 → 셰이더 가우시안 단면으로 빛줄기 표현
-	# 폭을 2.5°로 넓히되 가우시안이 가장자리를 자연스럽게 0으로 만듦
-	var ion_base_w: float  = cpos.length() * deg_to_rad(2.5)
+	# 가우시안 FWHM = 0.372 × 전폭. half-width=0.7° → FWHM≈0.52° (Hale-Bopp/NEOWISE 실측 0.3–1°)
+	var ion_base_w: float  = cpos.length() * deg_to_rad(0.7)
 	_comet_ion_mesh.clear_surfaces()
 	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
 	const NT: int = 32
@@ -1297,7 +1298,8 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 	if d_raw.length() < 0.01:
 		d_raw = dust_dir.cross(Vector3.UP if abs(dust_dir.y) < 0.85 else Vector3.RIGHT)
 	var dust_perp: Vector3 = d_raw.normalized()
-	var dust_base_w: float = cpos.length() * deg_to_rad(4.5)  # 밑변 4.5°, 더 넓음
+	# half-width=1.5° → FWHM≈1.12° (실제 먼지 꼬리 1–3°)
+	var dust_base_w: float = cpos.length() * deg_to_rad(1.5)
 
 	_comet_dust_mesh.clear_surfaces()
 	_comet_dust_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
