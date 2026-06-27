@@ -618,7 +618,7 @@ func update(
 	_update_comet(sun_altaz, dt, hour_utc, latitude, longitude)
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
 	_update_rainbow(sun_altaz, cloud_props, ground_wetness, delta)
-	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, delta)
+	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, dt["hour"], delta)
 
 func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
 	var sky_cam: Camera3D = get_viewport().get_camera_3d()
@@ -654,7 +654,7 @@ func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness
 	_rainbow_mat.set_shader_parameter("intensity", _rainbow_intensity)
 	_rainbow_mesh.visible = _rainbow_intensity > 0.005
 
-func _update_fog(weather_type: String, rain_rate: float, temperature: float, wind_speed: float, cloud_props: Dictionary, delta: float) -> void:
+func _update_fog(weather_type: String, rain_rate: float, temperature: float, wind_speed: float, cloud_props: Dictionary, hour_local: float, delta: float) -> void:
 	var env: Environment = _world_env.environment
 	var target_density: float = 0.0
 	match weather_type:
@@ -671,9 +671,13 @@ func _update_fog(weather_type: String, rain_rate: float, temperature: float, win
 		"OVERCAST":
 			target_density = 0.001
 		_:
-			# 복사안개: 맑음 + 기온 -2~4°C
-			if cloud_props["okta"] < 0.3 and temperature > -2.0 and temperature < 4.0:
-				target_density = 0.005
+			# 복사안개: 맑은 밤~이른 아침(22:00~10:00), 기온 -2~15°C
+			# 실제로는 여름(5~15°C)에도 자주 발생하며, 낮에는 태양열로 소산됨
+			var rad_hour: bool = hour_local >= 22.0 or hour_local < 10.0
+			if cloud_props["okta"] < 0.3 and temperature > -2.0 and temperature < 15.0 and rad_hour:
+				# 기온이 낮을수록 이슬점에 근접 → 더 진한 안개
+				var t_factor: float = clampf(1.0 - (temperature - (-2.0)) / 17.0, 0.2, 1.0)
+				target_density = lerp(0.002, 0.008, t_factor)
 	# target=0(맑아지는 중)이면 1.5배속으로 빠르게 소멸
 	var fog_spd: float = 0.3 if target_density > _fog_density_cur else (1.5 if target_density < 0.0001 else 0.1)
 	_fog_density_cur = lerpf(_fog_density_cur, target_density, delta * fog_spd)
@@ -727,7 +731,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_sun_mesh.global_position = cam_origin + sun_dir * 100.0
 	_sun_mesh.visible  = elevation > -3.0
 
-	var warm: float        = clampf(1.0 - elevation / 20.0, 0.0, 1.0)
+	# 태양 색온도: 0°→주황(~3000K), 35°+→흰색(~5800K). 실제로 20°에서도 선명히 노란색.
+	var warm: float        = clampf(1.0 - elevation / 35.0, 0.0, 1.0)
 	var night_blend: float = clampf(-elevation / 6.0, 0.0, 1.0)
 	var white   := Color(1, 1, 1)
 	var orange  := Color(1.0, 0.6, 0.3)
@@ -744,7 +749,9 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sun_lux: float  = _sun_illuminance(elevation)
 	var moon_lux: float = 0.0
 	if moon_alt > 0.0:
-		moon_lux = 0.27 * moon_illum * sin(deg_to_rad(moon_alt))
+		# 반대현상(opposition effect): 보름달은 선형 예상보다 ~40% 밝음.
+		# pow(illum, 1.8)로 근사 → 반달=0.287, 초승(25%)=0.077 (선형 0.5/0.25보다 훨씬 낮음)
+		moon_lux = 0.27 * pow(moon_illum, 1.8) * sin(deg_to_rad(moon_alt))
 	var total_lux: float = sun_lux + moon_lux + STARLIGHT_FLOOR_LUX
 
 	var exposure_ev: float = _exposure_for_lux(total_lux)
@@ -845,7 +852,8 @@ func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: 
 		var twilight: float = clampf((sun_elev - appear_elev - 2.0) / -2.0, 0.0, 1.0)
 		# 포그손 밝기 × 박명 가시도 → instance color.a 에 인코딩
 		var pogson_b: float = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
-		mm.set_instance_color(i, Color(1.0, 1.0, 1.0, pogson_b * twilight))
+		var sc: Color = _star_spectral_color(star["ra"], star["dec"])
+		mm.set_instance_color(i, Color(sc.r, sc.g, sc.b, pogson_b * twilight))
 		var altaz: Vector2 = Astronomy.radec_to_altaz(star["ra"], star["dec"], g, latitude, longitude)
 		var dir: Vector3   = _altaz_to_dir(altaz.x, altaz.y)
 		# 포그손 법칙 기반 로그 크기: 5등급차 = 100배 밝기, 크기는 밝기의 0.18승에 비례
@@ -1139,9 +1147,9 @@ func _update_meteor(sun_altaz: Vector2, cloud_props: Dictionary, dt: Dictionary,
 	_meteor_next -= delta
 	if _meteor_next <= 0.0:
 		_spawn_meteor()
-		# 기본 간격: 20~60초 / star_vis
-		# 유성우 중: 강도에 비례해 간격 단축 (피크 ZHR 120 → 최대 5× 단축)
-		var interval: float = randf_range(20.0, 60.0) / max(star_vis, 0.1)
+		# 산발 유성 실제 빈도: 시간당 5~10개 = 360~720초 간격 (전 하늘 ZHR 기준)
+		# 유성우 중: 강도에 비례해 간격 단축 (ZHR 120 → 최대 5× 단축)
+		var interval: float = randf_range(360.0, 720.0) / max(star_vis, 0.1)
 		interval /= max(1.0, 1.0 + _shower_intensity * 4.0)
 		_meteor_next = interval
 
@@ -1189,13 +1197,18 @@ func _build_comet() -> void:
 	var nuc_shader := Shader.new()
 	nuc_shader.code = """
 shader_type spatial;
-render_mode unshaded, cull_disabled, blend_add, depth_draw_never, billboard;
+render_mode unshaded, cull_disabled, blend_add, depth_draw_never;
 uniform float brightness = 0.0;
 uniform vec3  nuc_color  = vec3(1.0, 0.98, 0.92);
+void vertex() {
+\t// 태양과 동일한 뷰 공간 빌보드 — render_mode billboard은 Godot4 spatial에서 무효
+\tvec4 center_view = VIEW_MATRIX * MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
+\tPOSITION = PROJECTION_MATRIX * (center_view + vec4(VERTEX.xy, 0.0, 0.0));
+}
 void fragment() {
 \tvec2 uv = UV * 2.0 - 1.0;
 \tfloat r2 = dot(uv, uv);
-\t// 원형 마스크: r2>0.9에서 0으로 → 사각 Quad 경계 완전 제거
+\t// 원형 마스크: r2>1.0에서 0 → 사각 Quad 경계 완전 제거
 \tfloat mask = 1.0 - smoothstep(0.7, 1.0, r2);
 \t// 날카로운 핵(×18) + 코마 광무(×3.5) 이중 레이어
 \tfloat core = exp(-r2 * 18.0) * 1.3;
@@ -1374,6 +1387,51 @@ static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 			var f: float = (x - xs[i]) / (xs[i + 1] - xs[i])
 			return lerp(ys[i], ys[i + 1], f)
 	return ys[ys.size() - 1]
+
+# B-V 색지수 기반 스펙트럼 색상 — 실제 B-V값에서 변환한 RGB (감마 보정 없음, HDR 값 그대로)
+# 참조: Allen's Astrophysical Quantities, 5th ed. / SIMBAD catalog B-V indices
+# [RA°, Dec°, R, G, B] — RA/Dec는 J2000.0 도 단위, 허용 오차 ±0.8°
+static func _star_spectral_color(ra: float, dec: float) -> Color:
+	# 밝은 별 스펙트럼 색 테이블 (1등성 이상 + 색이 특히 뚜렷한 별)
+	# 청색(B형): (0.72, 0.82, 1.0) / 청백(A형): (0.84, 0.90, 1.0) / 백색(F형): (1.0, 0.97, 0.88)
+	# 황색(G형): (1.0, 0.92, 0.72) / 주황(K형): (1.0, 0.78, 0.48) / 적색(M형): (1.0, 0.55, 0.30)
+	const TABLE: Array = [
+		# 이름         RA       Dec       R     G     B        스펙트럼
+		[101.287, -16.716, 0.87, 0.92, 1.00],  # Sirius      A1V  청백
+		[ 95.988, -52.696, 0.98, 0.98, 1.00],  # Canopus     F0I  백
+		[213.915,  19.182, 1.00, 0.76, 0.44],  # Arcturus    K1.5 주황
+		[279.235,  38.784, 0.82, 0.89, 1.00],  # Vega        A0V  청백
+		[ 79.172,  45.998, 1.00, 0.92, 0.70],  # Capella     G5   황
+		[ 78.634,  -8.201, 0.78, 0.87, 1.00],  # Rigel       B8I  청백
+		[114.828,   5.225, 1.00, 0.97, 0.87],  # Procyon     F5   백황
+		[ 24.429, -57.237, 0.76, 0.85, 1.00],  # Achernar    B6V  청
+		[ 88.792,   7.407, 1.00, 0.52, 0.28],  # Betelgeuse  M2I  적등
+		[297.696,   8.868, 1.00, 0.98, 0.90],  # Altair      A7V  백
+		[ 68.980,  16.509, 1.00, 0.72, 0.38],  # Aldebaran   K5   적주황
+		[247.352, -26.432, 1.00, 0.46, 0.24],  # Antares     M1.5 적
+		[201.298, -11.161, 0.74, 0.84, 1.00],  # Spica       B1V  청
+		[116.329,  28.026, 1.00, 0.86, 0.62],  # Pollux      K0   주황
+		[344.413, -29.622, 1.00, 0.98, 0.93],  # Fomalhaut   A4V  백
+		[310.358,  45.280, 1.00, 0.99, 0.96],  # Deneb       A2I  백
+		[152.093,  11.967, 0.80, 0.88, 1.00],  # Regulus     B7V  청백
+		[104.656, -28.972, 0.75, 0.84, 1.00],  # Adhara      B2II 청
+		[113.649,  31.889, 0.86, 0.92, 1.00],  # Castor      A1V  청백
+		[ 81.283,   6.350, 0.75, 0.85, 1.00],  # Bellatrix   B2   청
+		[ 81.572,  28.608, 0.82, 0.89, 1.00],  # Elnath      B7   청백
+		[253.084, -42.998, 1.00, 0.97, 0.88],  # Sargas      F1   백
+		[193.507,  55.960, 0.90, 0.94, 1.00],  # Alioth      A0   청백
+		[276.992, -34.385, 0.90, 0.95, 1.00],  # Kaus Aus.   B9   백
+		[ 99.428,  16.399, 1.00, 0.99, 0.94],  # Alhena      A0   백
+		[219.919, -60.833, 1.00, 0.94, 0.76],  # Rigil Kent. G2V  황 (적위 낮아 서울에서 안 보임)
+		[210.956, -60.373, 0.73, 0.83, 1.00],  # Hadar       B1   청
+	]
+	const TOL2: float = 0.64   # 허용 오차 0.8°의 제곱
+	for entry in TABLE:
+		var dra: float  = ra  - entry[0]
+		var ddec: float = dec - entry[1]
+		if dra * dra + ddec * ddec < TOL2:
+			return Color(entry[2], entry[3], entry[4])
+	return Color(1.0, 1.0, 1.0)   # 목록에 없는 별: 흰색
 
 static func _sun_illuminance(alt_deg: float) -> float:
 	var anchors_alt := [-18.0, -12.0, -6.0, 0.0, 10.0, 30.0, 60.0, 90.0]
