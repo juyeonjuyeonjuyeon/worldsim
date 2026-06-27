@@ -507,7 +507,8 @@ void fragment() {
 	col = mix(col, sun_color * 1.6, thin * sun_up * 0.55);
 	ALBEDO = col * brightness;
 	// 밤에는 brightness가 거의 0이므로 ALPHA도 함께 줄여 구름 노이즈 패턴이 남지 않도록 함
-	ALPHA  = a * smoothstep(0.03, 0.4, brightness);
+	// edge0=0.07 > sky_brightness_safe_min(0.0625=1/16) 이므로 야간엔 ALPHA가 정확히 0
+	ALPHA  = a * smoothstep(0.07, 0.5, brightness);
 }
 """
 	_cloud_shader_mat = ShaderMaterial.new()
@@ -929,6 +930,8 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	var drift_raw = _cloud_shader_mat.get_shader_parameter("drift")
 	var drift: Vector2 = drift_raw if drift_raw != null else Vector2.ZERO
 	drift += wind_vec * wind_amt * delta * 0.003
+	# 무한 누적 방지 — hash2의 fract(i*127.1) 연산이 i가 크면 정밀도를 잃어 노이즈 패턴 붕괴
+	drift = Vector2(fmod(drift.x, 512.0), fmod(drift.y, 512.0))
 	_cloud_shader_mat.set_shader_parameter("drift", drift)
 
 # ── 번개 볼트 형상 ───────────────────────────────────────────────────
@@ -1174,9 +1177,12 @@ uniform float brightness = 0.0;
 uniform vec3  nuc_color  = vec3(1.0, 0.98, 0.92);
 void fragment() {
 \tvec2 uv = UV * 2.0 - 1.0;
-\tfloat glow = exp(-dot(uv,uv) * 4.0) * brightness;
+\tfloat r2 = dot(uv, uv);
+\t// 중심부: 날카로운 핵(×16) + 넓은 코마 글로우(×2) 합산
+\tfloat core = exp(-r2 * 16.0) * 1.2;
+\tfloat coma = exp(-r2 * 2.5) * 0.35;
 \tALBEDO = nuc_color;
-\tALPHA  = glow;
+\tALPHA  = clamp((core + coma) * brightness, 0.0, 1.0);
 }
 """
 	_comet_nuc_mat = ShaderMaterial.new()
@@ -1185,12 +1191,18 @@ void fragment() {
 	_comet_nuc_inst.material_override = _comet_nuc_mat
 	_comet_nuc_inst.visible = false
 	add_child(_comet_nuc_inst)
-	# 꼬리용 공유 셰이더 (퍼 버텍스 컬러)
+	# 꼬리용 공유 셰이더: UV.y=0/1이 가장자리, UV.y=0.5가 중심
+	# 가우시안 단면으로 날카로운 도형 느낌 제거 → 빛줄기 느낌
 	var tail_s := Shader.new()
 	tail_s.code = """
 shader_type spatial;
 render_mode unshaded, cull_disabled, blend_add, depth_draw_never;
-void fragment() { ALBEDO = COLOR.rgb; ALPHA = COLOR.a; }
+void fragment() {
+\tfloat cx = UV.y * 2.0 - 1.0;          // -1(가장자리) ~ 0(중심) ~ +1(반대 가장자리)
+\tfloat soft = exp(-cx * cx * 5.0);      // 가우시안 단면 — 가장자리에서 자연스럽게 0으로
+\tALBEDO = COLOR.rgb;
+\tALPHA  = COLOR.a * soft;
+}
 """
 	_comet_ion_mesh  = ImmediateMesh.new()
 	_comet_ion_inst  = MeshInstance3D.new()
@@ -1226,19 +1238,22 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 	var ion_perp: Vector3  = raw_perp.normalized()
 
 	# ── 이온 꼬리: 청백색 테이퍼 리본 ─────────────────────────────────
-	# 밑변 폭 ≈ 1.5°, 끝으로 갈수록 0으로 수렴
-	var ion_base_w: float  = cpos.length() * deg_to_rad(1.5)
+	# UV.y: 1=+가장자리, 0=-가장자리 → 셰이더 가우시안 단면으로 빛줄기 표현
+	# 폭을 2.5°로 넓히되 가우시안이 가장자리를 자연스럽게 0으로 만듦
+	var ion_base_w: float  = cpos.length() * deg_to_rad(2.5)
 	_comet_ion_mesh.clear_surfaces()
 	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
-	const NT: int = 28
+	const NT: int = 32
 	for i in range(NT + 1):
 		var t: float     = float(i) / NT
 		var pos: Vector3 = cpos + away * ion_len * t
-		var w: float     = ion_base_w * (1.0 - t)
+		var w: float     = ion_base_w * (1.0 - t * 0.85)  # 끝에서 15% 폭 유지 → 급격한 수렴 방지
 		var a: float     = (1.0 - t * t) * bright
 		var col := Color(0.62, 0.78, 1.0, a)
+		_comet_ion_mesh.surface_set_uv(Vector2(t, 1.0))
 		_comet_ion_mesh.surface_set_color(col)
 		_comet_ion_mesh.surface_add_vertex(pos + ion_perp * w)
+		_comet_ion_mesh.surface_set_uv(Vector2(t, 0.0))
 		_comet_ion_mesh.surface_set_color(col)
 		_comet_ion_mesh.surface_add_vertex(pos - ion_perp * w)
 	_comet_ion_mesh.surface_end()
@@ -1262,12 +1277,14 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 	for i in range(NT + 1):
 		var t: float     = float(i) / NT
 		var pos: Vector3 = cpos + dust_dir * dust_len * t
-		# 먼지 꼬리: 핵 근처 넓고 끝은 25%로 수렴 (실제 먼지 팬 형태)
-		var w: float     = dust_base_w * lerp(1.0, 0.25, t)
+		# 먼지 꼬리: 핵 근처 넓고 끝은 30%로 수렴 (실제 먼지 팬 형태)
+		var w: float     = dust_base_w * lerp(1.0, 0.30, t)
 		var a: float     = (1.0 - t) * bright * 0.55
 		var col := Color(1.0, 0.94, 0.78, a)
+		_comet_dust_mesh.surface_set_uv(Vector2(t, 1.0))
 		_comet_dust_mesh.surface_set_color(col)
 		_comet_dust_mesh.surface_add_vertex(pos + dust_perp * w)
+		_comet_dust_mesh.surface_set_uv(Vector2(t, 0.0))
 		_comet_dust_mesh.surface_set_color(col)
 		_comet_dust_mesh.surface_add_vertex(pos - dust_perp * w)
 	_comet_dust_mesh.surface_end()
