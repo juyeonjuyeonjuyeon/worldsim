@@ -49,6 +49,7 @@ func build() -> void:
 	_build_rain_snow()
 	_build_splash()
 	_build_tree_splash()
+	_build_reflection_probe()
 
 func _build_ground() -> void:
 	_ground_mesh = MeshInstance3D.new()
@@ -250,21 +251,62 @@ void fragment() {
 	ALPHA     = clamp((0.72 + fresnel * 0.22) * alpha_mult, 0.0, 1.0) * circ;
 }
 """
-	# 웅덩이 전용 opaque 셰이더 — blend_mix 제거로 GBuffer 패스에 포함되어 SSR 적용 가능
-	# 원형 경계는 discard로 처리. 반사는 SSR + SPECULAR/ROUGHNESS PBR이 담당.
+	# 웅덩이 셰이더 — SCREEN_TEXTURE 반사로 하늘·나무가 실제로 비침
+	# blend_mix 투명 패스에서 렌더링 → SCREEN_TEXTURE에 하늘·불투명 오브젝트 포함됨
+	# 바람 uniform으로 수면 법선 교란 및 파문 위상 이동 구현
 	_puddle_shader = Shader.new()
 	_puddle_shader.code = """
 shader_type spatial;
-render_mode depth_draw_opaque, cull_disabled;
+render_mode blend_mix, depth_draw_opaque, cull_disabled;
+uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_linear_mipmap;
 uniform float rain_intensity : hint_range(0.0, 1.0) = 0.0;
 uniform float sky_brightness : hint_range(0.0, 2.0) = 1.0;
+uniform vec2  wind_dir_xz = vec2(0.0, 0.0);
+uniform float wind_speed  = 0.0;
+
 void fragment() {
-	// 원형 바깥 픽셀 제거 — opaque discard로 SSR GBuffer에 진입
-	if (length(UV - vec2(0.5)) > 0.50) discard;
-	float ripple = 0.0;
+	// 원형 마스크
+	float circ = 1.0 - smoothstep(0.47, 0.50, length(UV - vec2(0.5)));
+
+	// 월드 위치 및 카메라 방향
+	vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 to_cam    = normalize(CAMERA_POSITION_WORLD - world_pos);
+
+	// 바람으로 인한 수면 법선 교란
+	float wsp  = wind_speed * 0.016;
+	vec2  surf = UV * vec2(9.0, 7.0) + wind_dir_xz * TIME * wind_speed * 0.12;
+	float wn   = sin(surf.x + TIME * 1.4) * cos(surf.y + TIME * 1.1);
+	vec3 water_n = normalize(vec3(-wn * wsp * wind_dir_xz.x, 1.0, -wn * wsp * wind_dir_xz.y));
+
+	// 프레넬
+	float cosA    = clamp(dot(to_cam, water_n), 0.0, 1.0);
+	float fresnel = pow(1.0 - cosA, 2.5);
+
+	// 반사 방향을 스크린 UV로 투영 (하늘·나무가 SCREEN_TEXTURE에 포함)
+	vec3 refl_dir = reflect(-to_cam, water_n);
+	vec4 rc = PROJECTION_MATRIX * VIEW_MATRIX * vec4(world_pos + refl_dir * 80.0, 1.0);
+	vec2 refl_uv = (rc.w > 0.001) ? rc.xy / rc.w * 0.5 + 0.5 : SCREEN_UV;
+
+	// 바람에 의한 반사 UV 교란 (파도가 반사상을 흔듦)
+	float wd = wind_speed * 0.004;
+	refl_uv += vec2(sin(UV.x * 14.0 + TIME * 2.2) * wd,
+	                cos(UV.y * 11.0 + TIME * 1.9) * wd);
+	refl_uv = clamp(refl_uv, 0.001, 0.999);
+	vec3 screen_refl = texture(SCREEN_TEXTURE, refl_uv).rgb;
+
+	// 수심색 + 화면 반사 합성 (최소 25% 반사로 수직에서도 하늘 보임)
+	vec3 deep = vec3(0.01, 0.04, 0.10) * sky_brightness;
+	float refl_str = clamp(fresnel * 0.70 + 0.25, 0.0, 0.92);
+	vec3 col = mix(deep, screen_refl, refl_str);
+
+	// 빗방울 파문 (바람 방향으로 위상 이동)
+	float ripple   = 0.0;
+	float w_phase  = wind_speed * 0.35;
 	for (int i = 0; i < 4; i++) {
 		float fi = float(i);
-		vec2 c   = vec2(0.5) + vec2(sin(fi * 1.618 + 0.5), cos(fi * 2.094 + 1.2)) * 0.20;
+		vec2 c   = vec2(0.5) + vec2(
+			sin(fi * 1.618 + 0.5 + wind_dir_xz.x * TIME * w_phase),
+			cos(fi * 2.094 + 1.2 + wind_dir_xz.y * TIME * w_phase)) * 0.20;
 		float d  = length(UV - c) * 2.2;
 		float t  = fract(TIME * 0.75 + fi * 0.25);
 		float r  = 0.06 + t * 0.84;
@@ -272,12 +314,13 @@ void fragment() {
 		float rg = smoothstep(r - w, r, d) * smoothstep(r + w * 0.35, r, d);
 		ripple  += rg * (1.0 - t) * 1.2;
 	}
-	vec3 deep = vec3(0.01, 0.04, 0.10) * sky_brightness;
-	ALBEDO    = deep;
-	EMISSION  = vec3(clamp(ripple * rain_intensity * 0.25, 0.0, 0.40));
+	col += vec3(clamp(ripple * rain_intensity * 0.25, 0.0, 0.40));
+
+	ALBEDO    = col;
 	ROUGHNESS = 0.02;
 	SPECULAR  = 0.95;
 	METALLIC  = 0.0;
+	ALPHA     = clamp(0.90 + fresnel * 0.08, 0.0, 1.0) * circ;
 }
 """
 	var low_pts := _find_low_points(8, 3.5)
@@ -296,6 +339,8 @@ void fragment() {
 		pmat.shader = _puddle_shader
 		pmat.set_shader_parameter("rain_intensity", 0.0)
 		pmat.set_shader_parameter("sky_brightness", 1.0)
+		pmat.set_shader_parameter("wind_dir_xz", Vector2(0.0, 0.0))
+		pmat.set_shader_parameter("wind_speed",  0.0)
 		p.material_override = pmat
 		add_child(p)
 		_puddle_nodes.append(p)
@@ -659,6 +704,8 @@ func update(
 		var pmat: ShaderMaterial = _puddle_mats[i] as ShaderMaterial
 		pmat.set_shader_parameter("rain_intensity", rain_int)
 		pmat.set_shader_parameter("sky_brightness", sky_brightness)
+		pmat.set_shader_parameter("wind_dir_xz", Vector2(sin(wind_dir_rad), cos(wind_dir_rad)))
+		pmat.set_shader_parameter("wind_speed",  wind_amt)
 		# 파동 에미터 — 웅덩이 원 안에서만 링 발생 (UV 0.47 마스크 기준 94%)
 		var re: GPUParticles3D = _ripple_emitters[i] as GPUParticles3D
 		re.position.y = _puddle_base_y[i] + 0.003
@@ -738,6 +785,20 @@ func _find_low_points(count: int, min_sep: float) -> Array:
 		if ok:
 			chosen.append(c)
 	return chosen
+
+func _build_reflection_probe() -> void:
+	# ReflectionProbe: 씬 전체(별·달·구름 포함)를 cubemap으로 캡처
+	# UPDATE_ALWAYS = 매 프레임 갱신 → 별/구름 등 투명 오브젝트도 반사에 포함
+	# SCREEN_TEXTURE에 잡히지 않는 투명 오브젝트 반사를 보완
+	var probe := ReflectionProbe.new()
+	probe.update_mode    = ReflectionProbe.UPDATE_ALWAYS
+	probe.intensity      = 1.0
+	probe.max_distance   = 80.0
+	probe.extents        = Vector3(22.0, 18.0, 22.0)
+	probe.position       = Vector3(0.0, 4.0, 0.0)
+	probe.box_projection = false
+	probe.interior       = false
+	add_child(probe)
 
 static func _seasonal_leaf_tint(month: int) -> Color:
 	match month:
