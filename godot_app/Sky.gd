@@ -639,16 +639,11 @@ func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness
 		elev_factor = smoothstep(1.0, 8.0, sun_elev) * smoothstep(42.0, 34.0, sun_elev)
 	# 비가 내릴 때만 (rain_rate > 0.5mm/hr) 빗방울 인자 산출
 	var rain_factor: float = clampf((rain_rate_cur - 0.5) / 15.0, 0.0, 1.0)
-	# RAIN 날씨: okta는 항상 0.85~1.0이라 구름 투과 기준을 별도 처리
-	#   비 오는 상황 = 구름 사이 틈새 햇빛이 충분히 있다고 가정 (okta<1 = 완전히 안 막힘)
-	#   폭우(>40mm/hr)는 구름이 너무 두꺼워 태양광 완전 차단
-	# 비 없는 날씨: 구름이 두꺼울수록 태양 차단 (기존 방식 유지)
-	var cloud_fade: float
-	if rain_rate_cur > 0.5:
-		cloud_fade = clampf(1.0 - rain_rate_cur / 40.0, 0.0, 1.0)
-	else:
-		cloud_fade = clampf((0.92 - cloud_props["okta"]) / 0.25, 0.0, 1.0)
-	var target: float = elev_factor * rain_factor * cloud_fade
+	# 태양 가시도와 직접 연동: 태양이 안 보이면 무지개도 생기지 않음
+	# sky_overcast_amt_current는 실제 구름 τ에서 계산됨 (tau/12 지수 감쇠)
+	# 태양 원반 cloud_fade(1-overcast*0.85)와 동일한 공식 → 일관성 보장
+	var sun_vis: float = clampf(1.0 - sky_overcast_amt_current * 0.85, 0.0, 1.0)
+	var target: float = elev_factor * rain_factor * sun_vis
 	var spd: float = 0.5 if target > _rainbow_intensity else 0.08
 	_rainbow_intensity = lerpf(_rainbow_intensity, target, delta * spd)
 	_rainbow_mat.set_shader_parameter("intensity", _rainbow_intensity)
