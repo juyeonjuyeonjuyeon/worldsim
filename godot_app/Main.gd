@@ -185,7 +185,7 @@ func _update_all(delta: float) -> void:
 	var moon: Dictionary = Astronomy.moon_state(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
 	var cloud_props: Dictionary = _weather_cloud_props()
 
-	sim_temperature = _estimate_temperature(dt["month"], fmod(dt["hour"], 24.0))
+	sim_temperature = _estimate_temperature(dt["month"], fmod(dt["hour"], 24.0), latitude)
 	_sky.show_constellations = show_constellations
 	_sky.update(
 		sun_altaz, moon, cloud_props,
@@ -246,13 +246,26 @@ func _current_datetime() -> Dictionary:
 		return {"year": d["year"], "month": d["month"], "day": d["day"], "hour": hour}
 	return {"year": sim_year, "month": sim_month, "day": sim_day, "hour": time_of_day}
 
-static func _estimate_temperature(month: int, hour_local: float) -> float:
-	# 서울 월평균 기온 (1월~12월, °C) — 기상청 평년값 기반
-	const MONTHLY_AVG: Array = [-2.5, 0.3, 5.2, 12.1, 17.2, 22.1, 25.0, 25.7, 21.4, 14.8, 7.2, 0.4]
-	var base: float = MONTHLY_AVG[clampi(month - 1, 0, 11)]
-	# 일교차: 오후 2시 최고, 새벽 최저. 진폭 ±6°C
-	var day_offset: float = -6.0 * cos((hour_local - 14.0) * PI / 12.0)
-	return base + day_offset
+static func _estimate_temperature(month: int, hour_local: float, latitude: float) -> float:
+	# 위도별 기후 근사 — 해양·대륙 혼합 단순 모델
+	# 위도별 연 평균 기온: 0°=26°C, 25°=22°C, 45°=11°C, 65°=0°C, 90°=-20°C
+	const LAT_P:  Array = [0.0, 25.0, 45.0, 65.0, 90.0]
+	const MEAN_P: Array = [26.0, 22.0, 11.0, 0.0, -20.0]
+	# 위도별 계절 진폭 (연 최고·최저 절반폭): 적도≈1°C, 중위도≈10°C, 극지≈12°C
+	const AMP_P:  Array = [1.0, 5.0, 10.0, 14.0, 12.0]
+	var abs_lat: float       = abs(latitude)
+	var annual_mean: float   = _lerp_breakpoints(abs_lat, LAT_P, MEAN_P)
+	var seasonal_amp: float  = _lerp_breakpoints(abs_lat, LAT_P, AMP_P)
+	# 남반구: 1월↔7월 등 계절 6개월 반전
+	var eff_month: float = float(month)
+	if latitude < 0.0:
+		eff_month = fmod(float(month - 1 + 6), 12.0) + 1.0
+	# 최고 기온 8월, 최저 2월 기준 코사인 (북반구 기준, 남반구는 위에서 반전됨)
+	var phase: float         = cos((eff_month - 8.0) * 2.0 * PI / 12.0)
+	var monthly_base: float  = annual_mean + seasonal_amp * phase
+	# 일교차 ±6°C (오후 2시 최고, 새벽 최저)
+	var day_offset: float    = -6.0 * cos((hour_local - 14.0) * PI / 12.0)
+	return monthly_base + day_offset
 
 static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 	if x <= xs[0]:
