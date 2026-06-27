@@ -14,6 +14,7 @@ const FIELD_HALF: float = 15.0
 const TAU_CIRRUS: float = 0.6
 const TAU_CUMULUS: float = 4.0
 const TAU_OVERCAST: float = 18.0
+const TAU_OVERCAST_LIGHT: float = 4.0  # "흐림 정도" 슬라이더 0.0 쪽 끝값(엷은 흐림)
 # WMO 강수강도 경계(mm/hr): 약한 비 ≤2.5, 보통 2.5~7.6, 강한 7.6~50, 폭우 >50
 # (WMO 가이드 및 각국 기상청 공통 분류). 이 경계에서 강수를 만드는 전형적
 # 구름(약~보통 비=난층운, 강한 비~폭우=적운형 강수운)의 광학두께를 매칭함.
@@ -29,6 +30,7 @@ const OKTA_OVERCAST: float = 8.0 / 8.0
 # ── 날씨/시간 상태 (블렌더판 WS_WeatherProps와 대응) ──
 var weather_type: String = "RAIN"   # CLEAR/CIRRUS/CUMULUS/OVERCAST/RAIN/SNOW
 var rain_rate: float = 20.0
+var overcast_intensity: float = 0.6  # OVERCAST일 때만 쓰임 — 엷은 흐림(0)~짙은 흐림(1)
 var wind_enabled: bool = true
 var wind_speed: float = 1.6
 var latitude: float = 37.5665
@@ -55,6 +57,8 @@ var rain_particles: GPUParticles3D
 var snow_particles: GPUParticles3D
 var ground_mesh: MeshInstance3D
 var ground_mat: StandardMaterial3D
+var ground_mist: MeshInstance3D
+var ground_mist_mat: StandardMaterial3D
 var leaf_mats: Array = []
 var leaf_base_colors: Array = []
 var tree_sway_pivots: Array = []
@@ -103,6 +107,7 @@ func _ready() -> void:
 	randomize()
 	_load_star_catalog()
 	_build_ground()
+	_build_ground_mist()
 	_build_trees()
 	_build_puddles()
 	_build_sky_and_lights()
@@ -165,6 +170,30 @@ func _build_ground() -> void:
 	horizon.position.y = -0.01  # z-fighting 방지용 최소 오프셋만(이전 -0.05는 단차로 보일 만큼 컸음)
 	horizon.material_override = ground_mat
 	add_child(horizon)
+
+func _build_ground_mist() -> void:
+	# 버그였던 부분(밤에 구름이 없어 보이고, 비 오는 저녁 하늘뷰에서 별이
+	# 까만 점으로 보이던 원인): 이전엔 "지면 실안개"를 Environment의 전역
+	# 거리 안개(fog_density)로 구현했는데, 이게 카메라로부터의 "거리"만으로
+	# 계산되는 전역 효과라 고도와 무관하게 모든 걸 뒤덮음 — 별 구체(반경
+	# 400)는 그 거리에서 안개 농도가 거의 100%(1-e^(-400*density)≈1)가 되어
+	# 안개색(밤엔 거의 검정)으로 완전히 덮여버렸고, 구름판(y=13~32)도 카메라
+	# 거리 기준 절반 가까이 안개에 덮여 하늘색과 거의 구분 안 되는 회색으로
+	# 뭉개졌음. 실제 "지면 실안개"는 낮은 고도에만 있어야 하므로, 전역
+	# 거리안개 대신 지면 근처에만 떠 있는 실제 메쉬(블렌더판 GroundMist와
+	# 동일한 접근)로 교체 — 별/구름처럼 높이 있는 것들은 전혀 영향 안 받음.
+	ground_mist = MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(70.0, 3.0, 70.0)
+	ground_mist.mesh = box
+	ground_mist.position = Vector3(0, 1.5, 0)
+	ground_mist_mat = StandardMaterial3D.new()
+	ground_mist_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ground_mist_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ground_mist_mat.albedo_color = Color(0.6, 0.62, 0.65, 0.0)
+	ground_mist.material_override = ground_mist_mat
+	ground_mist.visible = false
+	add_child(ground_mist)
 
 func _make_tree(x: float, z: float, scale_: float, seed_: int) -> void:
 	var rng := RandomNumberGenerator.new()
@@ -433,22 +462,44 @@ func _build_ui() -> void:
 	add_child(layer)
 	var panel := Panel.new()
 	panel.position = Vector2(10, 10)
-	panel.size = Vector2(280, 620)
+	panel.size = Vector2(300, 560)
 	layer.add_child(panel)
+
+	# 패널을 고정 크기로 두고 안의 VBox가 그보다 길어지면(날씨별로 보이는
+	# 줄 개수가 달라서 항목이 늘어날 때) 그냥 패널 밖으로 넘쳐 잘려 보이던
+	# 문제 — ScrollContainer로 감싸서 넘치면 스크롤되게 함(항상 패널 안에
+	# 깔끔하게 들어감).
+	var scroll := ScrollContainer.new()
+	scroll.position = Vector2(5, 5)
+	scroll.size = Vector2(290, 550)
+	panel.add_child(scroll)
 	var vb := VBoxContainer.new()
-	vb.position = Vector2(10, 10)
-	vb.size = Vector2(260, 600)
-	panel.add_child(vb)
+	vb.custom_minimum_size = Vector2(270, 0)
+	scroll.add_child(vb)
 
 	var weather_opt := OptionButton.new()
 	for w in ["CLEAR", "CIRRUS", "CUMULUS", "OVERCAST", "RAIN", "SNOW"]:
 		weather_opt.add_item(w)
 	weather_opt.select(4)
-	weather_opt.item_selected.connect(func(idx):
-		weather_type = weather_opt.get_item_text(idx))
 	vb.add_child(_labeled(vb, "날씨", weather_opt))
 
-	vb.add_child(_slider_row(vb, "강수강도", 0.5, 60.0, rain_rate, func(v): rain_rate = v))
+	# 강수강도는 비/눈일 때만, 흐림 정도는 흐림일 때만 의미가 있는 값인데
+	# 날씨와 무관하게 항상 같이 떠 있어서 헷갈렸음 — 날씨를 바꾸면 그 날씨에
+	# 안 쓰이는 슬라이더는 숨김(자리도 같이 사라짐, VBoxContainer는 숨겨진
+	# 자식의 공간을 차지하지 않음).
+	var rain_rate_row: Control = _slider_row(vb, "강수강도", 0.5, 60.0, rain_rate, func(v): rain_rate = v)
+	vb.add_child(rain_rate_row)
+	var overcast_row: Control = _slider_row(vb, "흐림 정도", 0.0, 1.0, overcast_intensity, func(v): overcast_intensity = v)
+	vb.add_child(overcast_row)
+
+	var _refresh_weather_rows := func():
+		rain_rate_row.visible = weather_type == "RAIN" or weather_type == "SNOW"
+		overcast_row.visible = weather_type == "OVERCAST"
+	weather_opt.item_selected.connect(func(idx):
+		weather_type = weather_opt.get_item_text(idx)
+		_refresh_weather_rows.call())
+	_refresh_weather_rows.call()  # 초기 날씨(RAIN) 기준으로 한 번 적용
+
 	var wind_check := CheckBox.new()
 	wind_check.text = "바람"
 	wind_check.button_pressed = wind_enabled
@@ -719,7 +770,11 @@ func _weather_cloud_props() -> Dictionary:
 		"CUMULUS":
 			return {"tau": TAU_CUMULUS, "okta": OKTA_CUMULUS}
 		"OVERCAST":
-			return {"tau": TAU_OVERCAST, "okta": OKTA_OVERCAST}
+			# 이전엔 OVERCAST가 항상 고정 짙기(TAU_OVERCAST)였음 — RAIN/SNOW는
+			# 강수강도로 짙기가 바뀌는데 OVERCAST만 조절할 방법이 없었던 비대칭을
+			# "흐림 정도" 슬라이더로 해소.
+			var tau_o: float = lerp(TAU_OVERCAST_LIGHT, TAU_OVERCAST, overcast_intensity)
+			return {"tau": tau_o, "okta": OKTA_OVERCAST}
 		"RAIN":
 			var tau: float = _lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, RAIN_TAU_BREAKPOINTS)
 			return {"tau": tau, "okta": clampf(0.85 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.85, 1.0)}
@@ -895,8 +950,10 @@ func _update_weather_visual(delta: float) -> void:
 	cloud_shader_mat.set_shader_parameter("brightness", sky_brightness_safe)
 
 	# 지면 실안개 — 비/눈 올 때만, 노출 폭주 방지를 위해 같은 안전 배율을 곱함.
-	# 짙기도 같은 τ 기반 흐림 정도(density)에 비례.
-	var env: Environment = world_env.environment
+	# 짙기도 같은 τ 기반 흐림 정도(density)에 비례. 전역 거리안개(Environment
+	# fog) 대신 지면 근처에만 떠 있는 실제 메쉬(ground_mist)를 써서 별/구름
+	# 같은 먼 고도의 것들이 안개에 뒤덮이지 않게 함(위 _build_ground_mist
+	# 주석 참고).
 	var fog_amt: float = 0.0
 	if is_rain:
 		fog_amt = lerp(0.015, 0.05, density)
@@ -904,12 +961,10 @@ func _update_weather_visual(delta: float) -> void:
 		fog_amt = lerp(0.02, 0.07, density)
 	elif weather_type == "OVERCAST":
 		fog_amt = 0.02
-	env.fog_enabled = fog_amt > 0.0
-	if env.fog_enabled:
-		env.fog_density = fog_amt
-		var fog_c: Color = Color(0.6, 0.62, 0.65) * sky_brightness_safe
-		fog_c.a = 1.0
-		env.fog_light_color = fog_c
+	ground_mist.visible = fog_amt > 0.0
+	if ground_mist.visible:
+		var mist_c: Color = Color(0.6, 0.62, 0.65) * sky_brightness_safe
+		ground_mist_mat.albedo_color = Color(mist_c.r, mist_c.g, mist_c.b, clampf(fog_amt * 9.0, 0.0, 0.85))
 	var wind_amt: float = wind_speed if wind_enabled else 0.0
 	var drift_raw = cloud_shader_mat.get_shader_parameter("drift")
 	var drift: Vector2 = drift_raw if drift_raw != null else Vector2.ZERO
