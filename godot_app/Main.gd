@@ -372,9 +372,8 @@ func _build_sky_and_lights() -> void:
 	var moon_shader := Shader.new()
 	moon_shader.code = """
 shader_type spatial;
-render_mode unshaded, cull_back;
+render_mode unshaded, cull_back, blend_mix, depth_draw_never;
 uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
-uniform vec3 dark_color : source_color = vec3(0.05, 0.055, 0.07);
 uniform vec3 lit_color : source_color = vec3(1.0, 0.98, 0.92);
 uniform float brightness : hint_range(0.0, 10.0) = 2.0;
 uniform float exposure_safe : hint_range(0.0, 1.0) = 1.0;
@@ -382,27 +381,26 @@ uniform float exposure_safe : hint_range(0.0, 1.0) = 1.0;
 varying vec3 world_normal;
 
 void vertex() {
-	// unshaded 렌더모드에서는 fragment()의 NORMAL이 제대로 안 넘어옴(직접
-	// 확인 — NORMAL을 색으로 그려보면 그라데이션 없이 단색만 나옴, 라이팅용
-	// 노멀 패스가 최적화로 생략되는 듯). 구체가 로컬원점 중심이라 VERTEX
-	// (로컬좌표) 자체가 곧 바깥쪽 방향(법선)과 같으므로 그걸 월드로 변환해서 씀.
 	world_normal = normalize((MODEL_MATRIX * vec4(VERTEX, 0.0)).xyz);
 }
 
 void fragment() {
 	float ndotl = dot(normalize(world_normal), normalize(sun_dir));
-	float lit = smoothstep(-0.05, 0.05, ndotl);
-	vec3 col = mix(dark_color, lit_color, lit);
-	// exposure_safe 없이는 밤에 tonemap_exposure가 최대 74만배까지 곱해져서
-	// 어두운 면(dark_color)도 밝은 면과 똑같이 새하얗게 날아가 위상 모양이
-	// 통째로 사라짐(실제 렌더로 확인된 버그) — 구름/지면안개와 같은 사전보정
-	// 배율을 똑같이 곱해서 노출이 다시 곱해진 뒤에야 올바른 절대 밝기가 되게 함.
-	ALBEDO = col * brightness * exposure_safe;
-	EMISSION = col * brightness * exposure_safe;
+	// 어두운 면을 투명으로 처리 → 초승달·반달 위상 모양이 실제로 보임.
+	// 이전엔 dark_color(어두운 청회색)가 불투명하게 렌더돼 마치 달 표면에
+	// 그림자가 있는 것처럼 보였고, 그 어두운 영역 바깥의 bloom이 lit부분과
+	// 분리돼 '후광과 달이 떨어진' 것처럼 보였음 — 어두운 면을 alpha=0으로
+	// 투명하게 해서 하늘 배경이 그대로 보이게 함.
+	float lit = smoothstep(-0.08, 0.08, ndotl);
+	vec3 col = lit_color * brightness * exposure_safe * lit;
+	ALBEDO = col;
+	EMISSION = col;
+	ALPHA = lit;  // 어두운 면은 완전 투명, 밝은 면만 렌더됨
 }
 """
 	moon_shader_mat.shader = moon_shader
 	moon_shader_mat.set_shader_parameter("sun_dir", Vector3(0, 1, 0))
+	moon_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	moon_mesh.material_override = moon_shader_mat
 	add_child(moon_mesh)
 
@@ -430,7 +428,7 @@ func _build_stars() -> void:
 func _build_clouds() -> void:
 	cloud_mesh = MeshInstance3D.new()
 	var plane := PlaneMesh.new()
-	plane.size = Vector2(160, 160)
+	plane.size = Vector2(2000, 2000)  # 160→2000: 지평선까지 구름이 꽉 채워지게 — 이전엔 평면 끝 경계가 사각형으로 보였음
 	cloud_mesh.mesh = plane
 	cloud_mesh.position = Vector3(0, 20, 0)
 	var shader := Shader.new()
@@ -480,23 +478,34 @@ func _build_rain_snow() -> void:
 func _make_precip_particles(is_snow: bool) -> GPUParticles3D:
 	var p := GPUParticles3D.new()
 	p.amount = 2000 if not is_snow else 1200
-	p.lifetime = 3.0 if not is_snow else 8.0
-	p.position = Vector3(0, 9, 0)
+	p.lifetime = 3.5 if not is_snow else 8.0
+	# y=18: 구름 높이(RAIN shape_preset y=18)에서 출발 — 이전 y=9는 구름보다
+	# 훨씬 아래에서 빗방울이 생겨나 '근거 없이 뿌려지는' 느낌이었음.
+	# 구름 위치(y=18)에서 시작하면 실제로 구름에서 비가 내리는 것처럼 보임.
+	p.position = Vector3(0, 18, 0)
 	var mat := ParticleProcessMaterial.new()
 	mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	mat.emission_box_extents = Vector3(FIELD_HALF, 0.1, FIELD_HALF)
 	mat.direction = Vector3(0, -1, 0)
-	mat.spread = 2.0 if not is_snow else 25.0
+	# 비: spread=6으로 약간 더 퍼뜨리고 angle 무작위로 방울마다 낙하 방향이 조금씩 다름 —
+	# 이전엔 모든 방울이 동일 각도로 떨어져 '같은 모양' 느낌이었음.
+	mat.spread = 6.0 if not is_snow else 25.0
+	mat.angle_min = -8.0 if not is_snow else -40.0
+	mat.angle_max = 8.0 if not is_snow else 40.0
 	mat.gravity = Vector3(0, -9.0 if not is_snow else -1.2, 0)
-	mat.initial_velocity_min = 0.5
-	mat.initial_velocity_max = 1.0
+	mat.initial_velocity_min = 0.3 if not is_snow else 0.1
+	mat.initial_velocity_max = 1.2 if not is_snow else 0.5
+	# 비 방울 크기 약간 무작위화: scale_min/max는 _update_weather_visual에서 강수강도로 추가 조정됨
+	mat.scale_min = 0.7 if not is_snow else 0.5
+	mat.scale_max = 1.4 if not is_snow else 1.8
 	p.process_material = mat
 	var mesh := BoxMesh.new()
-	mesh.size = Vector3(0.02, 0.4, 0.02) if not is_snow else Vector3(0.05, 0.05, 0.05)
+	# 비 방울을 약간 얇고 길게(실제 빗줄기 느낌), 눈은 납작한 박스 유지
+	mesh.size = Vector3(0.018, 0.45, 0.018) if not is_snow else Vector3(0.06, 0.04, 0.06)
 	p.draw_pass_1 = mesh
 	var pmat := StandardMaterial3D.new()
 	pmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	pmat.albedo_color = Color(0.78, 0.87, 1.0, 0.7) if not is_snow else Color(0.95, 0.96, 0.98, 0.9)
+	pmat.albedo_color = Color(0.78, 0.87, 1.0, 0.65) if not is_snow else Color(0.95, 0.96, 0.98, 0.85)
 	pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mesh.material = pmat
 	return p
@@ -519,8 +528,14 @@ func _build_sound() -> void:
 	snow_player.stream = _load_loop_wav("res://sounds/snow_loop.wav")
 	snow_player.bus = "Master"
 	add_child(snow_player)
-	for name in ["thunder_close", "thunder_mid", "thunder_far"]:
-		var s := load("res://sounds/%s.wav" % name)
+	# 이름 변수: GDScript에서 `name`은 Node.name 프로퍼티와 충돌 가능 → snd_name 사용.
+	# loop_end=0 버그: loop_mode가 DISABLED여도 Godot 4 AudioStreamWAV는
+	# loop_end=0이면 재생 시작 직후 종료됨(_load_loop_wav 주석 참고) — 명시적 설정 필요.
+	for snd_name in ["thunder_close", "thunder_mid", "thunder_far"]:
+		var s = load("res://sounds/%s.wav" % snd_name)
+		if s is AudioStreamWAV:
+			s.loop_mode = AudioStreamWAV.LOOP_DISABLED
+			s.loop_end = int(s.get_length() * s.mix_rate)
 		if s != null:
 			thunder_streams.append(s)
 	rain_player.play()
@@ -843,6 +858,17 @@ static func _exposure_for_lux(total_lux: float) -> float:
 			return lerp(anchors_ev[i], anchors_ev[i + 1], f)
 	return anchors_ev[anchors_ev.size() - 1]
 
+## 달(sim_month)별 잎 색 보정 배율 — 실제 온대(한국 기준) 계절 식생 변화.
+## r/g/b 각 채널을 독립 조절해 베이스 녹색에 계절 특성을 입힘.
+func _seasonal_leaf_tint() -> Color:
+	match sim_month:
+		3, 4:    return Color(0.85, 1.05, 0.55)  # 봄: 연두색 새싹
+		5, 6, 7, 8: return Color(0.70, 1.00, 0.50)  # 여름: 짙은 초록
+		9, 10:   return Color(1.80, 0.75, 0.12)  # 가을: 단풍(주황·붉은색)
+		11:      return Color(1.20, 0.55, 0.10)  # 초겨울: 마른 갈색 잎
+		12, 1, 2: return Color(0.55, 0.40, 0.28) # 겨울: 앙상한 가지(회갈색)
+		_:       return Color(0.70, 1.00, 0.50)
+
 static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 	if x <= xs[0]:
 		return ys[0]
@@ -896,7 +922,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary) -> void:
 	var moon_dir: Vector3 = _altaz_to_dir(moon_alt, moon_az)
 	moon_light.global_transform = Transform3D(Basis.looking_at(-moon_dir, Vector3.UP), Vector3.ZERO)
 	moon_mesh.position = moon_dir * 100.0
-	moon_mesh.visible = moon_alt > -2.0
+	moon_mesh.visible = moon_alt > 0.0  # 지평선 아래로 내려가면 즉시 숨김 — 이전 -2.0은 메쉬가 y<0 위치로 이동해 땅을 뚫고 보였음
 	moon_shader_mat.set_shader_parameter("sun_dir", sun_dir)
 
 	var daylight: float = clampf((elevation + 6.0) / 26.0, 0.0, 1.0)
@@ -983,9 +1009,19 @@ func _update_stars(dt: Dictionary, hour_utc: float) -> void:
 	if star_data.is_empty():
 		return
 	var elevation_check: Vector2 = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
+	# 물리적으로 별은 항상 하늘에 존재함 — 낮에는 Rayleigh 산란(하늘 배경광)이
+	# 밝아서 안 보일 뿐이지 별이 사라지는 게 아님. night_blend=0이면 밝기=0
+	# (emission=0, alpha=0)으로 투명하게 처리해 '있지만 보이지 않는' 상태 구현.
 	var night_blend: float = clampf(-elevation_check.x / 6.0, 0.0, 1.0)
-	stars_mm.visible = night_blend > 0.01
-	if not stars_mm.visible:
+	var cloud_block: float = _weather_cloud_props()["okta"]
+	var star_vis: float = night_blend * (1.0 - cloud_block)
+	var mat: StandardMaterial3D = stars_mm.material_override
+	mat.emission_energy_multiplier = lerp(0.0, 4.0, star_vis)
+	# albedo alpha=0이면 quad가 완전 투명 → 낮에는 흰 사각형으로 보이던 문제 해결
+	mat.albedo_color = Color(1.0, 1.0, 1.0, star_vis)
+	# 완전 투명할 때는 위치 계산 생략(성능)
+	stars_mm.visible = true  # 항상 씬에 존재
+	if star_vis < 0.001:
 		return
 	var jd: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 	var g: float = Astronomy.gmst_deg(jd)
@@ -1000,13 +1036,6 @@ func _update_stars(dt: Dictionary, hour_utc: float) -> void:
 		var scale_: float = clampf(remap(mag, -1.5, 5.0, 2.5, 0.3), 0.3, 2.5)
 		var xf := Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius)
 		mm.set_instance_transform(i, xf)
-	# 구름이 끼면(흐림/비/큐뮬러스 등) 별이 가려져 덜 보여야 함 — 맑은 밤이
-	# 구름 낀 밤보다 별이 또렷한 실제 현상. WMO 옥타(하늘을 덮은 비율)를
-	# 그대로 "가려지는 비율"로 씀 — 옥타 자체가 이미 실측 기준값.
-	var cloud_block: float = _weather_cloud_props()["okta"]
-	var star_vis: float = night_blend * (1.0 - cloud_block)
-	var mat: StandardMaterial3D = stars_mm.material_override
-	mat.emission_energy_multiplier = lerp(0.0, 4.0, star_vis)
 
 func _update_weather_visual(delta: float) -> void:
 	var is_rain: bool = weather_type == "RAIN"
@@ -1109,10 +1138,16 @@ func _update_weather_visual(delta: float) -> void:
 	ground_mat.albedo_color = c
 	ground_mat.roughness = lerp(0.85, 0.3, ground_wetness)
 
+	var season_tint: Color = _seasonal_leaf_tint()
 	for i in range(leaf_mats.size()):
 		var base: Color = leaf_base_colors[i]
+		# 계절 색 보정: 베이스 색의 각 채널에 계절 배율을 곱해 단풍·새싹 등 표현
+		var seasonal := Color(
+			clampf(base.r * season_tint.r, 0.0, 1.0),
+			clampf(base.g * season_tint.g, 0.0, 1.0),
+			clampf(base.b * season_tint.b, 0.0, 1.0))
 		var m: StandardMaterial3D = leaf_mats[i]
-		m.albedo_color = base.lerp(snow_color, ground_snow)
+		m.albedo_color = seasonal.lerp(snow_color, ground_snow)
 
 	# 나뭇잎 위 눈 쌓임 캡 — ground_snow에 비례해 두껍게 부풀어 오름.
 	for cap in leaf_snow_caps:
@@ -1123,10 +1158,14 @@ func _update_weather_visual(delta: float) -> void:
 	# 지면 눈더미 입체 메쉬.
 	# BoxMesh size.y = 0.5, scale.y = ground_snow → 실제 높이 = 0.5*ground_snow.
 	# 아랫면을 y=0에 고정하려면 position.y = 0.5/2 * ground_snow = 0.25*ground_snow.
-	snow_ground_mesh.visible = ground_snow > 0.01
+	# threshold 0.01→0.12: 눈이 약간만 쌓여도 흰 평면이 갑자기 덮이던 문제 수정 —
+	# 어느정도(~10분) 내린 뒤에야 두께감 있는 메쉬가 나타나고 그 전까지는
+	# ground_mat 색상 lerp만으로 서서히 하얘지게 함.
+	snow_ground_mesh.visible = ground_snow > 0.12
 	if snow_ground_mesh.visible:
-		snow_ground_mesh.scale.y = ground_snow
-		snow_ground_mesh.position.y = 0.25 * ground_snow
+		var t: float = clampf((ground_snow - 0.12) / 0.88, 0.0, 1.0)
+		snow_ground_mesh.scale.y = t
+		snow_ground_mesh.position.y = 0.25 * t
 
 	# 웅덩이 — 비가 와서 젖은 만큼만 차오르고(ground_wetness), 눈이 덮이면
 	# (ground_snow) 안 보이게. 항상 고정 크기로 떠 있던 버그 수정.
