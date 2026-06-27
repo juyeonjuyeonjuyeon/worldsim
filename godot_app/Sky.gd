@@ -102,8 +102,8 @@ void fragment() {
 	bright_col = mix(bright_col, cloud_white, (1.0 - cloud_fade) * 0.8);
 	vec3 col = mix(dark_col, bright_col, lit) * cloud_fade;
 	ALBEDO   = col;
-	EMISSION = col;
-	// 어두운 면은 완전 투명 — 배경 하늘이 비치게 하여 검은 후광 제거
+	// EMISSION 제거 — unshaded+blend_mix에서 EMISSION은 ALPHA=0이어도 기록됨
+	// ALBEDO만 두면 ALPHA=lit*cloud_fade로 어두운 면이 완전 투명 처리됨
 	ALPHA = lit * cloud_fade;
 }
 """
@@ -117,7 +117,7 @@ void fragment() {
 	# 빌보드 정점 셰이더로 항상 카메라를 향함. blend_add로 하늘 색에 합산.
 	_sun_mesh = MeshInstance3D.new()
 	var sun_quad := QuadMesh.new()
-	sun_quad.size = Vector2(1.6, 1.6)
+	sun_quad.size = Vector2(0.9, 0.9)
 	_sun_mesh.mesh = sun_quad
 	var sun_shader := Shader.new()
 	sun_shader.code = """
@@ -134,10 +134,12 @@ void vertex() {
 
 void fragment() {
 	float d     = length(UV - vec2(0.5)) * 2.0;
-	float disc  = 1.0 - smoothstep(0.68, 0.88, d);
-	float glow  = exp(-d * 1.8) * 0.42;
+	// 원반: quad 안쪽 82% 영역이 실제 태양 원반, 0.9m quad에서 시각도 ~0.47°
+	float disc  = 1.0 - smoothstep(0.82, 0.96, d);
+	// 코로나 글로우: 빠르게 감쇠해 과도한 bloom 방지
+	float glow  = exp(-d * 4.5) * 0.18;
 	ALBEDO = sun_color;
-	ALPHA  = clamp((disc + glow) * cloud_fade, 0.0, 1.0);
+	ALPHA  = clamp((disc * 0.75 + glow) * cloud_fade, 0.0, 0.82);
 }
 """
 	_sun_shader_mat = ShaderMaterial.new()
@@ -366,7 +368,8 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	var coverage: float    = cloud_props["okta"]
 	var density: float     = sky_overcast_amt_current
 	var light_grey := Color(0.95, 0.95, 0.96)
-	var dark_grey  := Color(0.20, 0.21, 0.23)
+	# 최저 밝기 0.38 제한 — 완전 검은 blob 방지 (실제 비구름도 일부 빛 투과)
+	var dark_grey  := Color(0.38, 0.39, 0.42)
 	var cloud_color: Color = light_grey.lerp(dark_grey, density)
 
 	_cloud_mesh.visible    = shape["visible"]
