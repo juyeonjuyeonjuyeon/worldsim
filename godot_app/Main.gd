@@ -48,6 +48,7 @@ var elapsed_play_seconds: float = 0.0
 var sun_light: DirectionalLight3D
 var moon_light: DirectionalLight3D
 var moon_mesh: MeshInstance3D
+var moon_shader_mat: ShaderMaterial
 var world_env: WorldEnvironment
 var sky_mat: ProceduralSkyMaterial
 var stars_mm: MultiMeshInstance3D
@@ -156,6 +157,15 @@ func _build_ground() -> void:
 	ground_mat = StandardMaterial3D.new()
 	ground_mat.albedo_color = Color(0.16, 0.24, 0.08)
 	ground_mat.roughness = 0.85
+	# 버그였던 부분("저녁에 달빛이 땅에 이상한 모양으로 보임"): 방향광
+	# (DirectionalLight3D)은 평평한 면 전체를 똑같이 비춰야 하는데, 기본
+	# specular(metallic_specular≈0.5)가 남아있어서 카메라-달 반사각이
+	# 맞는 좁은 영역에만 둥글게 번지는 스페큘러 하이라이트(달빛 "반짝임
+	# 자국")가 생겼음 — 낮엔 전체가 밝아 안 보이다가 밤엔 그 작은 하이라이트
+	# 하나가 상대적으로 두드러져 "이상한 모양"으로 보인 것(실제 렌더로 확인
+	# 후 제거). 흙/풀은 실제로도 거의 무광이라 specular를 거의 0으로 낮춤
+	# (디퓨즈 조명은 그대로 유지).
+	ground_mat.metallic_specular = 0.04
 	ground_mesh.material_override = ground_mat
 	add_child(ground_mesh)
 
@@ -314,13 +324,49 @@ func _build_sky_and_lights() -> void:
 	msph.radius = 3.0
 	msph.height = 6.0
 	moon_mesh.mesh = msph
-	var mmat := StandardMaterial3D.new()
-	mmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mmat.albedo_color = Color(0.9, 0.9, 0.95)
-	mmat.emission_enabled = true
-	mmat.emission = Color(0.9, 0.9, 0.95)
-	mmat.emission_energy_multiplier = 2.0
-	moon_mesh.material_override = mmat
+	# 버그였던 부분(달의 위상 변화 미적용): 이전엔 구 전체가 항상 균일하게
+	# 밝은 흰색이라 신월/상현/보름이 다 똑같이 "꽉 찬 동그란 흰 점"으로
+	# 보였음. 실제 태양 방향과 구 표면 법선의 내적(명/암 경계)으로 음영을
+	# 줘서 초승달/반달/보름달 모양이 실제 태양-달-관측자 기하에 따라 그대로
+	# 나오게 함 — moon["illum"] 스칼라로 모양을 흉내내는 게 아니라, 진짜
+	# 방향 벡터로 계산하므로 결손 방향(어느 쪽이 차 있는지)까지 자동으로
+	# 맞음.
+	moon_shader_mat = ShaderMaterial.new()
+	var moon_shader := Shader.new()
+	moon_shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_back;
+uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
+uniform vec3 dark_color : source_color = vec3(0.05, 0.055, 0.07);
+uniform vec3 lit_color : source_color = vec3(1.0, 0.98, 0.92);
+uniform float brightness : hint_range(0.0, 10.0) = 2.0;
+uniform float exposure_safe : hint_range(0.0, 1.0) = 1.0;
+
+varying vec3 world_normal;
+
+void vertex() {
+	// unshaded 렌더모드에서는 fragment()의 NORMAL이 제대로 안 넘어옴(직접
+	// 확인 — NORMAL을 색으로 그려보면 그라데이션 없이 단색만 나옴, 라이팅용
+	// 노멀 패스가 최적화로 생략되는 듯). 구체가 로컬원점 중심이라 VERTEX
+	// (로컬좌표) 자체가 곧 바깥쪽 방향(법선)과 같으므로 그걸 월드로 변환해서 씀.
+	world_normal = normalize((MODEL_MATRIX * vec4(VERTEX, 0.0)).xyz);
+}
+
+void fragment() {
+	float ndotl = dot(normalize(world_normal), normalize(sun_dir));
+	float lit = smoothstep(-0.05, 0.05, ndotl);
+	vec3 col = mix(dark_color, lit_color, lit);
+	// exposure_safe 없이는 밤에 tonemap_exposure가 최대 74만배까지 곱해져서
+	// 어두운 면(dark_color)도 밝은 면과 똑같이 새하얗게 날아가 위상 모양이
+	// 통째로 사라짐(실제 렌더로 확인된 버그) — 구름/지면안개와 같은 사전보정
+	// 배율을 똑같이 곱해서 노출이 다시 곱해진 뒤에야 올바른 절대 밝기가 되게 함.
+	ALBEDO = col * brightness * exposure_safe;
+	EMISSION = col * brightness * exposure_safe;
+}
+"""
+	moon_shader_mat.shader = moon_shader
+	moon_shader_mat.set_shader_parameter("sun_dir", Vector3(0, 1, 0))
+	moon_mesh.material_override = moon_shader_mat
 	add_child(moon_mesh)
 
 func _build_stars() -> void:
@@ -737,8 +783,15 @@ static func _sun_illuminance(alt_deg: float) -> float:
 	return anchors_lux[anchors_lux.size() - 1]
 
 static func _exposure_for_lux(total_lux: float) -> float:
-	var anchors_lux := [STARLIGHT_FLOOR_LUX, 1.0, 3.4, 400.0, 12000.0, 100000.0]
-	var anchors_ev := [19.5, 19.0, 7.0, 2.0, 0.0, 0.0]
+	# 버그였던 부분("노을 후 밤하늘로 바뀔 때 갑자기 전환되는 느낌"): 기존
+	# 앵커가 lux=1.0->3.4 구간에서 EV가 19.0->7.0으로 12스톱이나 떨어졌는데,
+	# 이 구간은 태양 고도 -12°~-6°(시민박명) 사이의 단 몇 분에 해당해서
+	# 실제 체감으로 "순간적으로" 확 바뀌는 것처럼 보였음(다른 구간은 보통
+	# decade당 2~5스톱 정도). 끝점(19.5/0.0)은 그대로 두고 중간에 점을
+	# 더 넣어 변화율을 전 구간에서 고르게 만듦 — 물리적 결과(같은 lux엔
+	# 같은 노출)는 동일, 그 사이를 잇는 방식만 더 매끈해짐.
+	var anchors_lux := [STARLIGHT_FLOOR_LUX, 0.01, 0.1, 1.0, 3.4, 12.0, 40.0, 120.0, 400.0, 3000.0, 12000.0, 100000.0]
+	var anchors_ev := [19.5, 18.5, 17.2, 15.0, 12.5, 10.0, 8.0, 5.5, 3.5, 1.8, 0.6, 0.0]
 	var lux: float = max(total_lux, STARLIGHT_FLOOR_LUX)
 	var log_lux: float = log(lux) / log(10.0)
 	for i in range(anchors_lux.size() - 1):
@@ -805,6 +858,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary) -> void:
 	moon_light.global_transform = Transform3D(Basis.looking_at(-moon_dir, Vector3.UP), Vector3.ZERO)
 	moon_mesh.position = moon_dir * 100.0
 	moon_mesh.visible = moon_alt > -2.0
+	moon_shader_mat.set_shader_parameter("sun_dir", sun_dir)
 
 	var daylight: float = clampf((elevation + 6.0) / 26.0, 0.0, 1.0)
 	var night_blend: float = clampf(-elevation / 6.0, 0.0, 1.0)
@@ -836,6 +890,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary) -> void:
 
 	var day_sunset_brightness: float = min(1.0, 1.0 / exposure_mult)
 	sky_brightness_safe = day_sunset_brightness
+	moon_shader_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
 	var sky_night_blend: float = clampf((-elevation - 6.0) / 12.0, 0.0, 1.0)
 	var day_top := Color(0.35, 0.55, 0.95) * day_sunset_brightness
 	var sunset_top := Color(0.45, 0.35, 0.55) * day_sunset_brightness
