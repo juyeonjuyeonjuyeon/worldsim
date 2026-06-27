@@ -1,8 +1,12 @@
 genesis_env/
 output/
+_vendor/
+_ephem_cache/
+_sound_cache/
 *.mp4
 *.avi
 *.mov
 __pycache__/
 *.pyc
 *.blend1
+godot_app/.godot/
