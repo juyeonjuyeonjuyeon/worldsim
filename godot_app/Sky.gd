@@ -1149,7 +1149,7 @@ static func _day_of_year(month: int, day: int) -> int:
 func _build_comet() -> void:
 	# 핵: billboard QuadMesh + 방사형 글로우
 	var quad := QuadMesh.new()
-	quad.size = Vector2(8.0, 8.0)
+	quad.size = Vector2(14.0, 14.0)
 	_comet_nuc_inst = MeshInstance3D.new()
 	_comet_nuc_inst.mesh = quad
 	_comet_nuc_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -1200,37 +1200,63 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 	_comet_nuc_inst.global_position = cpos
 	_comet_nuc_mat.set_shader_parameter("brightness", clampf(bright * 1.5, 0.0, 3.0))
 	_comet_nuc_inst.visible = true
-	var r: float          = 395.0
-	var sun3: Vector3     = _altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
-	var away: Vector3     = -sun3
-	var ion_len: float    = r * deg_to_rad(18.0) * bright
-	var orb_perp: Vector3 = away.cross(cpos.normalized()).normalized()
-	var dust_dir: Vector3 = (away + orb_perp * 0.3).normalized()
-	var dust_len: float   = ion_len * 0.80
+
+	var sun3: Vector3      = _altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
+	var away: Vector3      = -sun3
+	var toward: Vector3    = cpos.normalized()   # 관측자 → 혜성 방향
+	var ion_len: float     = cpos.length() * deg_to_rad(18.0) * bright
+
+	# 꼬리 리본 폭 방향 — away ⊥ toward 평면에서 결정 (특이점 방지)
+	var raw_perp: Vector3 = away.cross(toward)
+	if raw_perp.length() < 0.01:
+		raw_perp = away.cross(Vector3.UP if abs(away.y) < 0.85 else Vector3.RIGHT)
+	var ion_perp: Vector3  = raw_perp.normalized()
+
+	# ── 이온 꼬리: 청백색 테이퍼 리본 ─────────────────────────────────
+	# 밑변 폭 ≈ 1.5°, 끝으로 갈수록 0으로 수렴
+	var ion_base_w: float  = cpos.length() * deg_to_rad(1.5)
 	_comet_ion_mesh.clear_surfaces()
-	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	const NT: int = 16
-	for i in range(NT):
-		var t0: float = float(i)     / NT
-		var t1: float = float(i + 1) / NT
-		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, (1.0 - t0) * bright))
-		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t0)
-		_comet_ion_mesh.surface_set_color(Color(0.62, 0.76, 1.0, (1.0 - t1) * bright))
-		_comet_ion_mesh.surface_add_vertex(cpos + away * ion_len * t1)
+	_comet_ion_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+	const NT: int = 28
+	for i in range(NT + 1):
+		var t: float     = float(i) / NT
+		var pos: Vector3 = cpos + away * ion_len * t
+		var w: float     = ion_base_w * (1.0 - t)
+		var a: float     = (1.0 - t * t) * bright
+		var col := Color(0.62, 0.78, 1.0, a)
+		_comet_ion_mesh.surface_set_color(col)
+		_comet_ion_mesh.surface_add_vertex(pos + ion_perp * w)
+		_comet_ion_mesh.surface_set_color(col)
+		_comet_ion_mesh.surface_add_vertex(pos - ion_perp * w)
 	_comet_ion_mesh.surface_end()
 	_comet_ion_inst.visible = true
+
+	# ── 먼지 꼬리: 황백색 넓은 팬 리본 ────────────────────────────────
+	# 공전 방향 성분 추가로 살짝 굽음 / 핵 근처가 넓고 끝이 좁음
+	var orb_raw: Vector3  = toward.cross(Vector3.UP if abs(toward.y) < 0.85 else Vector3.RIGHT)
+	var orb_perp: Vector3 = orb_raw.normalized()
+	var dust_dir: Vector3 = (away * 0.80 + orb_perp * 0.35).normalized()
+	var dust_len: float   = ion_len * 0.75
+
+	var d_raw: Vector3    = dust_dir.cross(toward)
+	if d_raw.length() < 0.01:
+		d_raw = dust_dir.cross(Vector3.UP if abs(dust_dir.y) < 0.85 else Vector3.RIGHT)
+	var dust_perp: Vector3 = d_raw.normalized()
+	var dust_base_w: float = cpos.length() * deg_to_rad(4.5)  # 밑변 4.5°, 더 넓음
+
 	_comet_dust_mesh.clear_surfaces()
-	_comet_dust_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	var spread: Vector3 = dust_dir.cross(cpos.normalized()).normalized()
-	for lane in range(-2, 3):
-		var ofs: Vector3 = spread * float(lane) * 2.0
-		for i in range(NT):
-			var t0: float = float(i)     / NT
-			var t1: float = float(i + 1) / NT
-			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, (1.0 - t0) * bright * 0.11))
-			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t0 + ofs * t0)
-			_comet_dust_mesh.surface_set_color(Color(1.0, 0.96, 0.80, (1.0 - t1) * bright * 0.11))
-			_comet_dust_mesh.surface_add_vertex(cpos + dust_dir * dust_len * t1 + ofs * t1)
+	_comet_dust_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+	for i in range(NT + 1):
+		var t: float     = float(i) / NT
+		var pos: Vector3 = cpos + dust_dir * dust_len * t
+		# 먼지 꼬리: 핵 근처 넓고 끝은 25%로 수렴 (실제 먼지 팬 형태)
+		var w: float     = dust_base_w * lerp(1.0, 0.25, t)
+		var a: float     = (1.0 - t) * bright * 0.55
+		var col := Color(1.0, 0.94, 0.78, a)
+		_comet_dust_mesh.surface_set_color(col)
+		_comet_dust_mesh.surface_add_vertex(pos + dust_perp * w)
+		_comet_dust_mesh.surface_set_color(col)
+		_comet_dust_mesh.surface_add_vertex(pos - dust_perp * w)
 	_comet_dust_mesh.surface_end()
 	_comet_dust_inst.visible = true
 
