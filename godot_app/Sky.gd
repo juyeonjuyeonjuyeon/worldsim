@@ -254,12 +254,19 @@ func _build_sky_and_lights() -> void:
 	_sun_light = DirectionalLight3D.new()
 	_sun_light.light_energy = 1.0
 	_sun_light.shadow_enabled = true
+	# ProceduralSkyMaterial의 내부 글로우를 사용하지 않음 — 커스텀 sun QuadMesh 셰이더로 대체.
+	# 기본값(LIGHT_AND_SKY)이면 ProceduralSky가 태양/달 방향에 8° 글로우를 추가 렌더링해
+	# 흐린 날씨에서 구름 blend_mix와 충돌하여 검정색 후광 아티팩트를 유발함.
+	_sun_light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 	add_child(_sun_light)
 
 	_moon_light = DirectionalLight3D.new()
 	_moon_light.light_energy = 0.0
 	_moon_light.light_color = Color(0.75, 0.82, 1.0)
 	_moon_light.shadow_enabled = false
+	# LIGHT_ONLY: 달 방향에도 ProceduralSky 글로우가 생기던 버그 수정.
+	# 12월 보름달(서울 고도 76°)에서 8° 글로우 원이 크게 보이던 현상도 함께 해결.
+	_moon_light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 	add_child(_moon_light)
 
 	_moon_mesh = MeshInstance3D.new()
