@@ -633,8 +633,15 @@ func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness
 		elev_factor = smoothstep(1.0, 8.0, sun_elev) * smoothstep(42.0, 34.0, sun_elev)
 	# 비가 내릴 때만 (rain_rate > 0.5mm/hr) 빗방울 인자 산출
 	var rain_factor: float = clampf((rain_rate_cur - 0.5) / 15.0, 0.0, 1.0)
-	# okta 0.90 이상이면 태양 차단 — 폭우일 때 okta~0.95 이므로 약한 무지개만 가능
-	var cloud_fade: float  = clampf((0.92 - cloud_props["okta"]) / 0.25, 0.0, 1.0)
+	# RAIN 날씨: okta는 항상 0.85~1.0이라 구름 투과 기준을 별도 처리
+	#   비 오는 상황 = 구름 사이 틈새 햇빛이 충분히 있다고 가정 (okta<1 = 완전히 안 막힘)
+	#   폭우(>40mm/hr)는 구름이 너무 두꺼워 태양광 완전 차단
+	# 비 없는 날씨: 구름이 두꺼울수록 태양 차단 (기존 방식 유지)
+	var cloud_fade: float
+	if rain_rate_cur > 0.5:
+		cloud_fade = clampf(1.0 - rain_rate_cur / 40.0, 0.0, 1.0)
+	else:
+		cloud_fade = clampf((0.92 - cloud_props["okta"]) / 0.25, 0.0, 1.0)
 	var target: float = elev_factor * rain_factor * cloud_fade
 	var spd: float = 0.5 if target > _rainbow_intensity else 0.08
 	_rainbow_intensity = lerpf(_rainbow_intensity, target, delta * spd)
@@ -1165,7 +1172,7 @@ static func _day_of_year(month: int, day: int) -> int:
 func _build_comet() -> void:
 	# 핵: billboard QuadMesh + 방사형 글로우
 	var quad := QuadMesh.new()
-	quad.size = Vector2(14.0, 14.0)
+	quad.size = Vector2(10.0, 10.0)
 	_comet_nuc_inst = MeshInstance3D.new()
 	_comet_nuc_inst.mesh = quad
 	_comet_nuc_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -1178,11 +1185,13 @@ uniform vec3  nuc_color  = vec3(1.0, 0.98, 0.92);
 void fragment() {
 \tvec2 uv = UV * 2.0 - 1.0;
 \tfloat r2 = dot(uv, uv);
-\t// 중심부: 날카로운 핵(×16) + 넓은 코마 글로우(×2) 합산
-\tfloat core = exp(-r2 * 16.0) * 1.2;
-\tfloat coma = exp(-r2 * 2.5) * 0.35;
+\t// 원형 마스크: r2>0.9에서 0으로 → 사각 Quad 경계 완전 제거
+\tfloat mask = 1.0 - smoothstep(0.7, 1.0, r2);
+\t// 날카로운 핵(×18) + 코마 광무(×3.5) 이중 레이어
+\tfloat core = exp(-r2 * 18.0) * 1.3;
+\tfloat coma = exp(-r2 * 3.5) * 0.4;
 \tALBEDO = nuc_color;
-\tALPHA  = clamp((core + coma) * brightness, 0.0, 1.0);
+\tALPHA  = clamp((core + coma) * mask * brightness, 0.0, 1.0);
 }
 """
 	_comet_nuc_mat = ShaderMaterial.new()
@@ -1292,8 +1301,11 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 
 func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude: float, longitude: float) -> void:
 	# 테스트 모드: 고도 45°, 정남 방향에 밝은 혜성 강제 표시
+	# 태양은 서쪽 25°로 고정 — 실제 태양이 정남쪽에 있으면 away·toward가 반평행이 되어
+	# 리본 폭 방향이 0벡터로 수렴, 꼬리가 납작한 사각형으로 보이는 문제 방지
 	if _comet_test_mode:
-		_draw_comet(_altaz_to_dir(45.0, 180.0) * 395.0, sun_altaz, 1.0)
+		var test_sun_altaz := Vector2(25.0, 270.0)   # 서쪽 고도 25°
+		_draw_comet(_altaz_to_dir(45.0, 180.0) * 395.0, test_sun_altaz, 1.0)
 		return
 	var jd:   float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 	var gmst: float = Astronomy.gmst_deg(jd)
