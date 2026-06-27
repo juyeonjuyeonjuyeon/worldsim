@@ -112,6 +112,22 @@ const CONST_SEGS: Array = [
 	[346.19,28.08,346.19,15.18],[346.19,15.18,3.31,15.18],
 	[3.31,15.18,2.10,29.09],[2.10,29.09,346.19,28.08],
 	[346.19,28.08,335.56,33.17],[346.19,15.18,323.49,9.83],
+	# 남십자성 (Crux, Southern Cross) ★ — 적위 -57°~-63°, 남위 25°N 이남에서 관측
+	# α Cru(Acrux)↔γ Cru(Gacrux) 세로축, β Cru(Mimosa)↔δ Cru 가로축
+	[187.791,-57.113,186.650,-63.099],   # γ Cru → α Cru (세로)
+	[191.930,-59.689,183.786,-58.749],   # β Cru → δ Cru (가로)
+	# 켄타우루스 (Centaurus) — 포인터 별 α·β Cen 이 남십자성을 가리킴
+	[219.919,-60.835,210.956,-60.373],   # α Cen → β Cen (포인터 선분)
+	[210.956,-60.373,204.972,-53.466],   # β Cen → ε Cen
+	[204.972,-53.466,190.379,-48.960],   # ε Cen → γ Cen
+	[204.972,-53.466,218.877,-42.158],   # ε Cen → η Cen
+	[218.877,-42.158,219.919,-60.835],   # η Cen → α Cen
+	# 용골자리 (Carina) — 남쪽 하늘의 밝은 별 카노푸스(α Car) 포함
+	[95.988,-52.696,125.629,-59.509],    # α Car(Canopus) → ε Car(Avior)
+	[125.629,-59.509,139.274,-59.275],   # ε Car → ι Car
+	[139.274,-59.275,138.301,-69.717],   # ι Car → β Car(Miaplacidus)
+	# 에리다누스 남부 (Eridanus south) — 포말하우트 근처까지 이어지는 긴 강
+	[24.429,-57.237,29.692,-61.400],     # α Eri(Achernar) → β Eri
 ]
 
 # 외부에서 읽는 출력값
@@ -835,6 +851,7 @@ func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: 
 	smat.set_shader_parameter("global_brightness", 4.0 * max(0.0, 1.0 - cloud_block))
 	var jd: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 	var g: float  = Astronomy.gmst_deg(jd)
+	var P: Basis  = Astronomy.precession_matrix(jd)   # J2000→현재 에포크 세차 행렬 (프레임당 1회)
 	var mm := _stars_mm.multimesh
 	var radius: float = 400.0
 	for i in range(_star_data.size()):
@@ -848,9 +865,12 @@ func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: 
 		var twilight: float = clampf((sun_elev - appear_elev - 2.0) / -2.0, 0.0, 1.0)
 		# 포그손 밝기 × 박명 가시도 → instance color.a 에 인코딩
 		var pogson_b: float = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
+		# 분광색 조회는 J2000 좌표 그대로 사용 (테이블이 J2000 기준)
 		var sc: Color = _star_spectral_color(star["ra"], star["dec"])
 		mm.set_instance_color(i, Color(sc.r, sc.g, sc.b, pogson_b * twilight))
-		var altaz: Vector2 = Astronomy.radec_to_altaz(star["ra"], star["dec"], g, latitude, longitude)
+		# 세차 보정 후 고도/방위각 계산
+		var pr: Vector2    = Astronomy.precess_radec(star["ra"], star["dec"], P)
+		var altaz: Vector2 = Astronomy.radec_to_altaz(pr.x, pr.y, g, latitude, longitude)
 		var dir: Vector3   = _altaz_to_dir(altaz.x, altaz.y)
 		# 포그손 법칙 기반 로그 크기: 5등급차 = 100배 밝기, 크기는 밝기의 0.18승에 비례
 		# 포그손 법칙 기반 시각 크기: 밝기 ∝ 10^(-0.4·mag), 크기 ∝ 밝기^0.5 = 10^(-0.20·mag)
@@ -908,12 +928,15 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 	lmat.set_shader_parameter("line_alpha", clampf(star_vis * 0.45, 0.0, 0.45))
 	var jd: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 	var g: float  = Astronomy.gmst_deg(jd)
+	var P: Basis  = Astronomy.precession_matrix(jd)
 	var radius: float = 395.0  # 별(400)보다 살짝 안쪽
 	_const_mesh.clear_surfaces()
 	_const_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
 	for seg in CONST_SEGS:
-		var a1: Vector2 = Astronomy.radec_to_altaz(seg[0], seg[1], g, latitude, longitude)
-		var a2: Vector2 = Astronomy.radec_to_altaz(seg[2], seg[3], g, latitude, longitude)
+		var p1: Vector2 = Astronomy.precess_radec(seg[0], seg[1], P)
+		var p2: Vector2 = Astronomy.precess_radec(seg[2], seg[3], P)
+		var a1: Vector2 = Astronomy.radec_to_altaz(p1.x, p1.y, g, latitude, longitude)
+		var a2: Vector2 = Astronomy.radec_to_altaz(p2.x, p2.y, g, latitude, longitude)
 		_const_mesh.surface_add_vertex(_altaz_to_dir(a1.x, a1.y) * radius)
 		_const_mesh.surface_add_vertex(_altaz_to_dir(a2.x, a2.y) * radius)
 	_const_mesh.surface_end()
@@ -1429,8 +1452,16 @@ static func _star_spectral_color(ra: float, dec: float) -> Color:
 		[193.507,  55.960, 0.90, 0.94, 1.00],  # Alioth      A0   청백
 		[276.992, -34.385, 0.90, 0.95, 1.00],  # Kaus Aus.   B9   백
 		[ 99.428,  16.399, 1.00, 0.99, 0.94],  # Alhena      A0   백
-		[219.919, -60.833, 1.00, 0.94, 0.76],  # Rigil Kent. G2V  황 (적위 낮아 서울에서 안 보임)
+		[219.919, -60.833, 1.00, 0.94, 0.76],  # Rigil Kent. G2V  황
 		[210.956, -60.373, 0.73, 0.83, 1.00],  # Hadar       B1   청
+		# 남반구 밝은 별 (남위 25° 이남에서 관측 가능)
+		[186.650, -63.099, 0.72, 0.82, 1.00],  # Acrux  α Cru B0.5 청
+		[191.930, -59.689, 0.72, 0.82, 1.00],  # Mimosa β Cru B0.5 청
+		[187.791, -57.113, 1.00, 0.50, 0.25],  # Gacrux γ Cru M4   적 (남반구 붉은 별 대표)
+		[125.629, -59.509, 1.00, 0.82, 0.56],  # Avior  ε Car K0+B 주황백
+		[138.301, -69.717, 0.90, 0.95, 1.00],  # Miaplacidus β Car A2 청백
+		[204.972, -53.466, 0.73, 0.83, 1.00],  # ε Cen  B1   청
+		[ 29.692, -61.400, 0.80, 0.88, 1.00],  # β Eri  A3   청백
 	]
 	const TOL2: float = 0.64   # 허용 오차 0.8°의 제곱
 	for entry in TABLE:

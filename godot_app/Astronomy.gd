@@ -50,6 +50,7 @@ static func _sun_geocentric(t: float) -> Dictionary:
 
 ## 고도(altitude)/방위(azimuth, 북=0 동=90 나침반 방위각) 공통 변환 — 적경/적위 +
 ## 그 시각의 그리니치 평균시각(GMST)·관측자 위경도만 있으면 어떤 천체든 동일.
+## 대기 굴절 자동 보정 포함: 지평선(0°)≈+29', 5°≈+10', 10°≈+5' (Bennett 1982 / Meeus 16.4절)
 static func radec_to_altaz(ra_deg: float, dec_deg: float, gmst_deg_val: float, lat_deg: float, lon_deg: float) -> Vector2:
 	var lst: float = fmod(gmst_deg_val + lon_deg, 360.0)
 	var h: float = (lst - ra_deg) * DEG2RAD
@@ -58,7 +59,13 @@ static func radec_to_altaz(ra_deg: float, dec_deg: float, gmst_deg_val: float, l
 	var alt: float = asin(sin(lat) * sin(dec) + cos(lat) * cos(dec) * cos(h))
 	var az: float = atan2(sin(h), cos(h) * sin(lat) - tan(dec) * cos(lat))
 	az = fmod(az * RAD2DEG + 180.0, 360.0)  # 천문 관례(남=0)를 나침반 관례(북=0)로
-	return Vector2(alt * RAD2DEG, az)
+	var alt_deg: float = alt * RAD2DEG
+	# 대기 굴절 보정 (진고도→겉보기 고도): -2° 이상에서만 적용
+	# R = 1.02/tan(alt + 10.3/(alt+5.11)) arcmin, 최대 0.62° 제한
+	if alt_deg > -2.0:
+		var R: float = 1.02 / tan((alt_deg + 10.3 / (alt_deg + 5.11)) * DEG2RAD)
+		alt_deg += clampf(R / 60.0, 0.0, 0.62)
+	return Vector2(alt_deg, az)
 
 static func gmst_deg(jd: float) -> float:
 	var t: float = (jd - 2451545.0) / 36525.0
@@ -194,8 +201,14 @@ static func planet_state(planet: String, year: int, month: int, day: int,
 		"jupiter":
 			mag = -9.395 + dt5 + 0.005*phi_d
 		"saturn":
-			# 토성환 기울기 미계산 — 환 효과 없는 구체 근사 (실제보다 ~0.5등 어두울 수 있음)
-			mag = -8.68 + dt5 + 0.044*phi_d
+			# 토성 고리 기울기 B (Meeus Ch.45): i=28.06°, Ω=169.51°+3.82°×T
+			# sin B = -sin(i)·cos(β)·sin(λ-Ω) + cos(i)·sin(β)
+			# 밝기 보정 Δmag = -2.60·|sin B| + 1.25·sin²B (고리 최대 개방 ≈ -0.9등)
+			var i_ring: float = 28.06 * DEG2RAD
+			var Om_ring: float = fmod(169.51 + 3.82 * t, 360.0) * DEG2RAD
+			var sinB: float = clampf(-sin(i_ring)*cos(b_g)*sin(l_g - Om_ring) + cos(i_ring)*sin(b_g), -1.0, 1.0)
+			var ring_dm: float = -2.60 * abs(sinB) + 1.25 * sinB * sinB
+			mag = -8.88 + dt5 + 0.044*phi_d + ring_dm
 		"uranus":
 			mag = -7.19 + dt5 + 0.0028*phi_d
 		"neptune":
@@ -204,3 +217,33 @@ static func planet_state(planet: String, year: int, month: int, day: int,
 			mag = 0.0
 
 	return {"alt": altaz.x, "az": altaz.y, "mag": mag, "ra": ra, "dec": dec}
+
+## J2000.0 → 목표 에포크 세차 행렬 (IAU 1976 Lieske, 정밀도 ~0.001° / 2050년 이전)
+## 반환: Godot Basis — P × v 로 직교좌표 변환
+static func precession_matrix(jd: float) -> Basis:
+	var t: float  = (jd - 2451545.0) / 36525.0
+	var f: float  = DEG2RAD / 3600.0   # 각초 → 라디안
+	var zeta: float  = ((2306.2181 + (1.39656 - 0.000139*t)*t)*t
+	                   + (0.30188  - 0.000344*t)*t*t + 0.017998*t*t*t) * f
+	var z:    float  = ((2306.2181 + (1.39656 - 0.000139*t)*t)*t
+	                   + (1.09468  + 0.000066*t)*t*t + 0.018203*t*t*t) * f
+	var theta: float = ((2004.3109 - (0.85330 + 0.000217*t)*t)*t
+	                   - (0.42665  + 0.000217*t)*t*t - 0.041775*t*t*t) * f
+	var sz: float = sin(zeta); var cz: float = cos(zeta)
+	var sZ: float = sin(z);    var cZ: float = cos(z)
+	var st: float = sin(theta); var ct: float = cos(theta)
+	# P = Rz(-z) × Ry(θ) × Rz(-ζ), Godot Basis는 열벡터(column) 기준
+	return Basis(
+		Vector3(cZ*ct*cz - sZ*sz, -sZ*ct*cz - cZ*sz, -st*cz),
+		Vector3(cZ*ct*sz + sZ*cz, -sZ*ct*sz + cZ*cz, -st*sz),
+		Vector3(cZ*st,            -sZ*st,              ct    )
+	)
+
+## J2000.0 RA/Dec → 현재 에포크 RA/Dec (도 단위)
+## P: precession_matrix(jd) 의 반환값을 재사용하면 효율적
+static func precess_radec(ra_deg: float, dec_deg: float, P: Basis) -> Vector2:
+	var ra: float  = ra_deg  * DEG2RAD
+	var dec: float = dec_deg * DEG2RAD
+	var v: Vector3 = P * Vector3(cos(dec)*cos(ra), cos(dec)*sin(ra), sin(dec))
+	return Vector2(atan2(v.y, v.x) * RAD2DEG,
+	               asin(clampf(v.z, -1.0, 1.0)) * RAD2DEG)
