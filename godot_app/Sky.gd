@@ -20,6 +20,7 @@ var _stars_mm: MultiMeshInstance3D
 var _cloud_mesh: MeshInstance3D
 var _cloud_shader_mat: ShaderMaterial
 var _star_data: Array = []
+var _current_exposure: float = 1.0  # 노출 스무딩 상태 (프레임 간 급격한 변화 방지)
 
 # ── 빌드 ─────────────────────────────────────────────────────────────
 func build() -> void:
@@ -227,11 +228,11 @@ func update(
 	longitude: float,
 	delta: float
 ) -> void:
-	_update_sky_and_lights(sun_altaz, moon, cloud_props, lightning_flash)
+	_update_sky_and_lights(sun_altaz, moon, cloud_props, lightning_flash, delta)
 	_update_stars(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_enabled, delta)
 
-func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float) -> void:
+func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
 	var elevation: float = sun_altaz.x
 	var azimuth: float   = sun_altaz.y
 	var sun_dir: Vector3 = _altaz_to_dir(elevation, azimuth)
@@ -277,7 +278,13 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var exposure_ev: float = _exposure_for_lux(total_lux)
 	if lightning_flash > 0.0:
 		exposure_ev = 0.0
-	var exposure_mult: float = pow(2.0, exposure_ev)
+	# FP16 HDR 버퍼 최솟값(6e-5) 대비 tonemap 보정 상한 = 2^4 = 16×
+	# 이 이상은 FP16 양자화 오차가 증폭되어 분홍/초록 노이즈로 나타남
+	# 낮→밤 급전환 방지: delta 기반 부드러운 스무딩 적용
+	const EV_MAX: float = 4.0
+	var target_exp: float = clampf(pow(2.0, exposure_ev), 0.5, pow(2.0, EV_MAX))
+	_current_exposure = lerp(_current_exposure, target_exp, clampf(delta * 2.0, 0.0, 1.0))
+	var exposure_mult: float = _current_exposure
 	_sun_light.light_energy  = min(clampf(sun_lux / 100000.0 * 3.0, 0.0, 6.0), 6.0 / exposure_mult)
 	_moon_light.light_energy = min(clampf(moon_lux / 0.27 * 0.6, 0.0, 0.6), 0.6 / exposure_mult) * exp(-(cloud_props["tau"] as float))
 
@@ -287,11 +294,16 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sky_night_blend: float = clampf((-elevation - 6.0) / 12.0, 0.0, 1.0)
 	var day_top     := Color(0.35, 0.55, 0.95) * sky_brightness_safe
 	var sunset_top  := Color(0.45, 0.35, 0.55) * sky_brightness_safe
-	var night_top   := Color(0.0000001, 0.000000115, 0.00000016)
+	# FP16 최솟값(6e-5) 이상으로 설정 — 극소 값은 FP16 양자화 노이즈 유발
+	# 달 위상/고도에 따라 밤하늘 전체 밝기 조정 (보름달 = 2.5배)
+	# tonemap ×16 후 달 없는 밤 ≈ (0.030, 0.035, 0.057) = 실제 어두운 남색
+	var moon_sky_factor: float = 1.0 + clampf(moon_lux / 0.27, 0.0, 1.0) * 1.5
+	var night_top := Color(0.00190 * moon_sky_factor, 0.00218 * moon_sky_factor, 0.00358 * moon_sky_factor)
 	var top: Color   = day_top.lerp(sunset_top, warm * (1.0 - sky_night_blend)).lerp(night_top, sky_night_blend)
 	var day_horizon    := Color(0.75, 0.80, 0.90) * sky_brightness_safe
 	var sunset_horizon := Color(1.0, 0.55, 0.30) * sky_brightness_safe
-	var night_horizon  := Color(0.00000005, 0.00000005, 0.00000008)
+	# 지평선은 상단보다 약간 더 어둡게 (실제 밤 지평선은 대기 소광으로 더 어두움)
+	var night_horizon  := Color(0.00080 * moon_sky_factor, 0.00085 * moon_sky_factor, 0.00140 * moon_sky_factor)
 	var horizon: Color  = day_horizon.lerp(sunset_horizon, warm * (1.0 - sky_night_blend)).lerp(night_horizon, sky_night_blend)
 
 	var cloud_tau: float = cloud_props["tau"]
