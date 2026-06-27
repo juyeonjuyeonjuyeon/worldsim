@@ -249,7 +249,9 @@ func _build_sky_and_lights() -> void:
 	var moon_shader := Shader.new()
 	moon_shader.code = """
 shader_type spatial;
-render_mode unshaded, cull_back, blend_mix, depth_draw_never;
+// blend_add: 어두운 면은 0을 더해 하늘에 흔적 없음, 밝은 면은 빛을 더함
+// → blend_mix의 반투명 경계가 낮 하늘보다 어두워 생기던 검은 후광 제거
+render_mode unshaded, cull_back, blend_add, depth_draw_never;
 uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);
 uniform vec3 lit_color : source_color = vec3(1.0, 0.98, 0.92);
 uniform float brightness : hint_range(0.0, 10.0) = 2.0;
@@ -265,16 +267,14 @@ void vertex() {
 void fragment() {
 	float ndotl = dot(normalize(world_normal), normalize(sun_dir));
 	float lit = smoothstep(-0.08, 0.08, ndotl);
-	vec3 dark_col   = vec3(0.008, 0.013, 0.028) * exposure_safe;
 	vec3 bright_col = lit_color * brightness * exposure_safe;
 	// 구름을 통과할수록 달빛이 파랗고 희게 산란됨
 	vec3 cloud_white = vec3(0.78, 0.82, 0.98) * exposure_safe;
 	bright_col = mix(bright_col, cloud_white, (1.0 - cloud_fade) * 0.8);
-	vec3 col = mix(dark_col, bright_col, lit) * cloud_fade;
-	ALBEDO   = col;
-	// EMISSION 제거 — unshaded+blend_mix에서 EMISSION은 ALPHA=0이어도 기록됨
-	// ALBEDO만 두면 ALPHA=lit*cloud_fade로 어두운 면이 완전 투명 처리됨
-	ALPHA = lit * cloud_fade;
+	ALBEDO = bright_col;
+	// 어두운 면: ALPHA=0 → 더해지는 빛 없음 = 완전히 투명
+	// 밝은 면: ALPHA=lit → bright_col만큼 하늘에 더해짐, 검은 후광 없음
+	ALPHA  = lit * cloud_fade;
 }
 """
 	_moon_shader_mat.shader = moon_shader
