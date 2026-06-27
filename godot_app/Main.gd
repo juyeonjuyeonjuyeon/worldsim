@@ -48,6 +48,7 @@ var time_of_day: float = 12.0
 var real_time_mode: bool = false
 var day_length_sec: float = 120.0
 var elapsed_play_seconds: float = 0.0
+var sim_temperature: float = 15.0
 
 # ── 모듈 참조 ──
 var _sky    = null
@@ -184,20 +185,22 @@ func _update_all(delta: float) -> void:
 	var moon: Dictionary = Astronomy.moon_state(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
 	var cloud_props: Dictionary = _weather_cloud_props()
 
+	sim_temperature = _estimate_temperature(dt["month"], fmod(dt["hour"], 24.0))
 	_sky.show_constellations = show_constellations
 	_sky.update(
 		sun_altaz, moon, cloud_props,
 		weather_type, wind_speed, wind_direction, wind_enabled,
 		_sound.lightning_flash_intensity,
 		_sound.lightning_bolt_dist_km,
-		dt, hour_utc, latitude, longitude, delta)
+		dt, hour_utc, latitude, longitude,
+		sim_temperature, _env.ground_wetness, delta)
 
 	_env.update(
 		weather_type, rain_rate, wind_speed, wind_direction, wind_enabled,
 		cloud_props, sim_month,
 		_sky.sky_brightness_safe, _sky.sky_overcast_amt_current,
 		rain_streak_scale, snow_size_scale,
-		delta)
+		sim_temperature, delta)
 
 	_sound.update(weather_type, wind_enabled, wind_speed, rain_rate, delta)
 
@@ -215,19 +218,19 @@ func _update_all(delta: float) -> void:
 func _weather_cloud_props() -> Dictionary:
 	match weather_type:
 		"CIRRUS":
-			return {"tau": TAU_CIRRUS, "okta": OKTA_CIRRUS}
+			return {"tau": TAU_CIRRUS, "okta": OKTA_CIRRUS, "rain_rate": 0.0}
 		"CUMULUS":
-			return {"tau": TAU_CUMULUS, "okta": OKTA_CUMULUS}
+			return {"tau": TAU_CUMULUS, "okta": OKTA_CUMULUS, "rain_rate": 0.0}
 		"OVERCAST":
 			var tau_o: float = lerp(TAU_OVERCAST_LIGHT, TAU_OVERCAST, overcast_intensity)
-			return {"tau": tau_o, "okta": OKTA_OVERCAST}
+			return {"tau": tau_o, "okta": OKTA_OVERCAST, "rain_rate": 0.0}
 		"RAIN":
 			var tau: float = _lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, RAIN_TAU_BREAKPOINTS)
-			return {"tau": tau, "okta": clampf(0.85 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.85, 1.0)}
+			return {"tau": tau, "okta": clampf(0.85 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.85, 1.0), "rain_rate": rain_rate}
 		"SNOW":
 			var tau_s: float = _lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, SNOW_TAU_BREAKPOINTS)
-			return {"tau": tau_s, "okta": clampf(0.80 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.80, 1.0)}
-	return {"tau": 0.0, "okta": 0.0}
+			return {"tau": tau_s, "okta": clampf(0.80 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.80, 1.0), "rain_rate": rain_rate}
+	return {"tau": 0.0, "okta": 0.0, "rain_rate": 0.0}
 
 func _current_datetime() -> Dictionary:
 	if real_time_mode:
@@ -242,6 +245,14 @@ func _current_datetime() -> Dictionary:
 		var d := Time.get_datetime_dict_from_unix_time(int(base))
 		return {"year": d["year"], "month": d["month"], "day": d["day"], "hour": hour}
 	return {"year": sim_year, "month": sim_month, "day": sim_day, "hour": time_of_day}
+
+static func _estimate_temperature(month: int, hour_local: float) -> float:
+	# 서울 월평균 기온 (1월~12월, °C) — 기상청 평년값 기반
+	const MONTHLY_AVG: Array = [-2.5, 0.3, 5.2, 12.1, 17.2, 22.1, 25.0, 25.7, 21.4, 14.8, 7.2, 0.4]
+	var base: float = MONTHLY_AVG[clampi(month - 1, 0, 11)]
+	# 일교차: 오후 2시 최고, 새벽 최저. 진폭 ±6°C
+	var day_offset: float = -6.0 * cos((hour_local - 14.0) * PI / 12.0)
+	return base + day_offset
 
 static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 	if x <= xs[0]:

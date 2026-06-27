@@ -7,6 +7,9 @@ const FIELD_HALF: float = 15.0
 var ground_wetness: float = 0.0
 var ground_snow: float    = 0.0
 var water_depth: float    = 0.0   # 실제 수위 (미터, 무제한)
+var ground_frost: float   = 0.0   # 서리/결빙 진행도 0-1
+var slush_factor: float   = 0.0   # 눈 위 비로 인한 슬러시 0-1
+var snow_type: String     = "WET" # WET(함박눈)/POWDER(가루눈)/GRAUPEL(싸락눈)/BLIZZARD(눈보라)
 
 var _ground_mesh: MeshInstance3D
 var _ground_mat: ShaderMaterial
@@ -263,6 +266,7 @@ uniform float rain_intensity : hint_range(0.0, 1.0) = 0.0;
 uniform float sky_brightness : hint_range(0.0, 2.0) = 1.0;
 uniform vec2  wind_dir_xz = vec2(0.0, 0.0);
 uniform float wind_speed  = 0.0;
+uniform float ice_factor  : hint_range(0.0, 1.0) = 0.0;
 
 void fragment() {
 	// 원형 마스크
@@ -314,11 +318,14 @@ void fragment() {
 		float rg = smoothstep(r - w, r, d) * smoothstep(r + w * 0.35, r, d);
 		ripple  += rg * (1.0 - t) * 1.2;
 	}
-	col += vec3(clamp(ripple * rain_intensity * 0.25, 0.0, 0.40));
+	// 결빙: ice_factor가 1이면 빙판(파문 없음, 흐린 청백)
+	col += vec3(clamp(ripple * rain_intensity * 0.25 * (1.0 - ice_factor), 0.0, 0.40));
+	vec3 ice_col = vec3(0.70, 0.80, 0.88) * sky_brightness;
+	col = mix(col, ice_col, ice_factor * 0.65);
 
 	ALBEDO    = col;
-	ROUGHNESS = 0.02;
-	SPECULAR  = 0.95;
+	ROUGHNESS = mix(0.02, 0.55, ice_factor);
+	SPECULAR  = mix(0.95, 0.25, ice_factor);
 	METALLIC  = 0.0;
 	ALPHA     = clamp(0.90 + fresnel * 0.08, 0.0, 1.0) * circ;
 }
@@ -595,6 +602,7 @@ func update(
 	sky_overcast: float,
 	rain_streak_scale: float,
 	snow_size_scale: float,
+	temperature: float,
 	delta: float
 ) -> void:
 	var is_rain: bool = weather_type == "RAIN"
@@ -617,20 +625,42 @@ func update(
 	if _rain_shader_mat:
 		_rain_shader_mat.set_shader_parameter("fall_dir", rain_gravity.normalized())
 	var snow_pmat: ParticleProcessMaterial = _snow_particles.process_material as ParticleProcessMaterial
-	snow_pmat.gravity = Vector3(wind_x * 1.1, -1.2, wind_z * 1.1)
 
 	# 강수강도 → 입자 양·크기 (rate=0이면 파티클 없음)
 	var rain_frac: float = 0.0 if rain_rate <= 0.0 else clampf(pow(rain_rate / 50.0, 0.21), 0.15, 1.0)
 	_rain_particles.amount_ratio = rain_frac
-	# 강도에 따른 물리적 크기 변화: 강한 비일수록 빗방울이 크고 낙하속도가 빨라 잔상이 길어짐
 	var rain_size: float = (0.7 + 0.5 * rain_frac) * rain_streak_scale
 	rain_pmat.scale_min = rain_size * 0.75
 	rain_pmat.scale_max = rain_size * 1.35
 	var snow_frac: float = clampf(rain_rate / 30.0, 0.1, 1.0)
 	_snow_particles.amount_ratio = snow_frac
-	var snow_size: float = (0.6 + 0.8 * snow_frac) * snow_size_scale
-	snow_pmat.scale_min = snow_size * 0.7
-	snow_pmat.scale_max = snow_size * 1.5
+
+	# 눈의 종류 분류 — 온도·바람 기반
+	# BLIZZARD: 눈보라 (T<-3°C, 강풍), POWDER: 가루눈 (T<-8°C),
+	# GRAUPEL: 싸락눈 (T<-4°C), WET: 함박눈 (T>-2°C)
+	if is_snow:
+		snow_type = _classify_snow(temperature, wind_amt)
+	match snow_type:
+		"WET":   # 함박눈: 크고 느리게 내림
+			snow_pmat.gravity = Vector3(wind_x * 0.5, -1.0, wind_z * 0.5)
+			var s_w: float = (1.0 + 1.0 * snow_frac) * snow_size_scale
+			snow_pmat.scale_min = s_w * 0.9; snow_pmat.scale_max = s_w * 1.7
+		"POWDER": # 가루눈: 잘고 바람에 날림
+			snow_pmat.gravity = Vector3(wind_x * 2.5, -0.7, wind_z * 2.5)
+			var s_p: float = (0.28 + 0.22 * snow_frac) * snow_size_scale
+			snow_pmat.scale_min = s_p * 0.6; snow_pmat.scale_max = s_p * 1.4
+		"GRAUPEL": # 싸락눈: 빠른 낙하, 알갱이형
+			snow_pmat.gravity = Vector3(wind_x * 0.3, -4.5, wind_z * 0.3)
+			var s_g: float = (0.45 + 0.35 * snow_frac) * snow_size_scale
+			snow_pmat.scale_min = s_g * 0.8; snow_pmat.scale_max = s_g * 1.2
+		"BLIZZARD": # 눈보라: 강한 수평 이동, 시야↓
+			snow_pmat.gravity = Vector3(wind_x * 5.0, -1.5, wind_z * 5.0)
+			var s_b: float = (0.22 + 0.18 * snow_frac) * snow_size_scale
+			snow_pmat.scale_min = s_b * 0.5; snow_pmat.scale_max = s_b * 1.2
+		_: # 기본값
+			snow_pmat.gravity = Vector3(wind_x * 1.1, -1.2, wind_z * 1.1)
+			var s_d: float = (0.6 + 0.8 * snow_frac) * snow_size_scale
+			snow_pmat.scale_min = s_d * 0.7; snow_pmat.scale_max = s_d * 1.5
 
 	# 스플래시 / 파문 — 비가 닿는 지면에서 튀어오르는 물방울 + 퍼지는 링
 	var splash_pmat: ParticleProcessMaterial = _splash_particles.process_material as ParticleProcessMaterial
@@ -655,24 +685,48 @@ func update(
 		ground_wetness = clampf(ground_wetness + delta * wet_rate, 0.0, 1.0)
 		# 비는 눈을 계절 속도의 6배로 녹임 (잠열 + 수온)
 		ground_snow    = clampf(ground_snow - delta * snow_melt * 6.0, 0.0, 1.0)
+		# 눈 위에 비: 슬러시 진행 (눈이 있을 때만)
+		if ground_snow > 0.05:
+			slush_factor = clampf(slush_factor + delta / 480.0, 0.0, 1.0)
+		else:
+			slush_factor = clampf(slush_factor - delta / 180.0, 0.0, 1.0)
 	elif is_snow:
-		# rain_rate 비례 쌓임: 10mm/hr → 300s 포화, 폭설(50mm) → 60s, 약한 눈(2mm) → 1500s
-		var snow_rate: float = clampf(rain_rate / 10.0, 0.5, 5.0) / 300.0
+		# 젖은 지면에서 눈이 빨리 달라붙음 (함박눈일수록 더)
+		var stick_bonus: float = ground_wetness * (1.5 if snow_type == "WET" else 0.7)
+		var snow_rate: float = clampf(rain_rate / 10.0, 0.5, 5.0) / 300.0 * (1.0 + stick_bonus)
 		ground_snow    = clampf(ground_snow + delta * snow_rate, 0.0, 1.0)
 		ground_wetness = clampf(ground_wetness - delta / 3600.0, 0.0, 1.0)
+		slush_factor   = clampf(slush_factor - delta / 300.0, 0.0, 1.0)
 	else:
 		ground_wetness = clampf(ground_wetness - delta / 3600.0, 0.0, 1.0)
 		ground_snow    = clampf(ground_snow - delta * snow_melt, 0.0, 1.0)
+		slush_factor   = clampf(slush_factor - delta / 300.0, 0.0, 1.0)
 
-	# 지면 색
-	var dry_color  := Color(0.16, 0.24, 0.08)
-	var wet_color  := Color(0.05, 0.13, 0.03)
-	var snow_color := Color(0.92, 0.94, 0.97)
+	# 서리/결빙 — 영하 2°C 이하일 때 서서히 생성, 0°C 이상·비·눈에 녹음
+	if temperature < -2.0 and not is_rain:
+		var frost_rate: float = clampf((-temperature - 2.0) / 8.0, 0.05, 1.0) / 1800.0
+		ground_frost = clampf(ground_frost + delta * frost_rate, 0.0, 1.0)
+	elif temperature > 0.5 or is_rain:
+		ground_frost = clampf(ground_frost - delta / 600.0, 0.0, 1.0)
+	elif is_snow and temperature > -1.0:
+		# 눈보라일 때는 서리 미생성
+		ground_frost = clampf(ground_frost - delta / 1200.0, 0.0, 1.0)
+
+	# 지면 색 — 건조·젖음·눈·슬러시·서리 레이어 합성
+	var dry_color   := Color(0.16, 0.24, 0.08)
+	var wet_color   := Color(0.05, 0.13, 0.03)
+	var snow_color  := Color(0.92, 0.94, 0.97)
+	var slush_color := Color(0.42, 0.45, 0.48)   # 더러운 회색 슬러시
+	var frost_color := Color(0.84, 0.88, 0.94)   # 서리: 옅은 청백
 	var c: Color = dry_color.lerp(wet_color, ground_wetness).lerp(snow_color, ground_snow)
+	c = c.lerp(slush_color, slush_factor * ground_snow)         # 슬러시
+	c = c.lerp(frost_color, ground_frost * (1.0 - ground_snow)) # 서리 (눈 없을 때)
 	_ground_mat.set_shader_parameter("albedo",    c)
-	_ground_mat.set_shader_parameter("roughness", lerp(0.85, 0.3, ground_wetness))
+	var wet_rough: float = lerp(0.85, 0.3, ground_wetness)
+	var frost_rough: float = lerp(wet_rough, 0.55, ground_frost)
+	_ground_mat.set_shader_parameter("roughness", frost_rough)
 	_horizon_mat.albedo_color = c
-	_horizon_mat.roughness    = lerp(0.85, 0.3, ground_wetness)
+	_horizon_mat.roughness    = frost_rough
 
 	# 나뭇잎 계절 색 + 젖음 효과
 	var wet: float = ground_wetness * (1.0 - ground_snow)
@@ -685,8 +739,9 @@ func update(
 			clampf(base.b * season_tint.b, 0.0, 1.0))
 		var m: StandardMaterial3D = _leaf_mats[i]
 		var leaf_col: Color = seasonal.lerp(snow_color, ground_snow)
+		leaf_col = leaf_col.lerp(frost_color, ground_frost * (1.0 - ground_snow) * 0.7)
 		m.albedo_color = leaf_col.darkened(wet * 0.38)
-		m.roughness    = lerp(0.9, 0.22, wet * 0.8)
+		m.roughness    = lerp(lerp(0.9, 0.22, wet * 0.8), 0.55, ground_frost * 0.5)
 
 	# 나무 줄기 젖음 효과
 	var trunk_dry := Color(0.18, 0.11, 0.04)
@@ -727,6 +782,9 @@ func update(
 		pmat.set_shader_parameter("sky_brightness", sky_brightness)
 		pmat.set_shader_parameter("wind_dir_xz", Vector2(sin(wind_dir_rad), cos(wind_dir_rad)))
 		pmat.set_shader_parameter("wind_speed",  wind_amt)
+		# 결빙: 영하이고 물기가 있을 때 ice_factor 상승
+		var puddle_ice: float = clampf(ground_frost * 2.0, 0.0, 1.0) if (temperature < -1.0 and wet > 0.05) else 0.0
+		pmat.set_shader_parameter("ice_factor", puddle_ice)
 		# 파동 에미터 — 웅덩이 원 안에서만 링 발생 (UV 0.47 마스크 기준 94%)
 		var re: GPUParticles3D = _ripple_emitters[i] as GPUParticles3D
 		re.position.y = _puddle_base_y[i] + 0.003
@@ -820,6 +878,15 @@ func _build_reflection_probe() -> void:
 	probe.box_projection = false
 	probe.interior       = false
 	add_child(probe)
+
+static func _classify_snow(temperature: float, wind_speed: float) -> String:
+	if wind_speed > 8.0 and temperature < -3.0:
+		return "BLIZZARD"
+	if temperature < -8.0:
+		return "POWDER"
+	if temperature < -4.0:
+		return "GRAUPEL"
+	return "WET"
 
 static func _seasonal_leaf_tint(month: int) -> Color:
 	match month:

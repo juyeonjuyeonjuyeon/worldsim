@@ -135,6 +135,10 @@ var _const_mesh: ImmediateMesh         # 별자리 선분
 var _const_mesh_inst: MeshInstance3D
 var _cloud_mesh: MeshInstance3D
 var _cloud_shader_mat: ShaderMaterial
+var _rainbow_mesh: MeshInstance3D
+var _rainbow_mat: ShaderMaterial
+var _rainbow_intensity: float = 0.0
+var _fog_density_cur: float   = 0.0
 var _bolt_mesh: ImmediateMesh          # 번개 볼트 선분
 var _bolt_inst: MeshInstance3D
 var _bolt_mat:  ShaderMaterial
@@ -170,6 +174,7 @@ func build() -> void:
 	_build_planets()
 	_build_constellations()
 	_build_clouds()
+	_build_rainbow()
 	_build_bolt()
 	_build_meteor()
 	_build_comet()
@@ -516,6 +521,64 @@ void fragment() {
 	_cloud_mesh.material_override = _cloud_shader_mat
 	add_child(_cloud_mesh)
 
+func _build_rainbow() -> void:
+	_rainbow_mesh = MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 450.0
+	sphere.height = 900.0
+	sphere.rings  = 48
+	sphere.radial_segments = 96
+	_rainbow_mesh.mesh = sphere
+	_rainbow_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_rainbow_mesh.visible = false
+	var rshader := Shader.new()
+	rshader.code = """
+shader_type spatial;
+render_mode blend_add, depth_draw_never, cull_front, unshaded;
+uniform vec3  sun_dir   = vec3(0.0, 1.0, 0.0);
+uniform float intensity : hint_range(0.0, 1.0) = 0.0;
+varying vec3 vert_os;
+
+vec3 hue_to_rgb(float h) {
+	h = fract(h);
+	float r = abs(h * 6.0 - 3.0) - 1.0;
+	float g = 2.0 - abs(h * 6.0 - 2.0);
+	float b = 2.0 - abs(h * 6.0 - 4.0);
+	return clamp(vec3(r, g, b), 0.0, 1.0);
+}
+
+void vertex() { vert_os = VERTEX; }
+
+void fragment() {
+	vec3 antisolar = normalize(-sun_dir);
+	vec3 view_dir  = normalize(vert_os);
+	float ang = degrees(acos(clamp(dot(view_dir, antisolar), -1.0, 1.0)));
+
+	// 지평선 아래(view_dir.y<0)로 갈수록 빠르게 소멸
+	float horizon_fade = clamp(view_dir.y * 12.0 + 0.5, 0.0, 1.0);
+
+	// 1차 무지개: 40.6°~42.5° (보라→빨강, hue 0.75→0.0)
+	float band1 = smoothstep(40.2, 40.6, ang) * smoothstep(42.9, 42.5, ang);
+	float hue1  = clamp((ang - 40.6) / (42.5 - 40.6), 0.0, 1.0);
+	vec3  col1  = hue_to_rgb(0.75 - hue1 * 0.75) * band1;
+
+	// 2차 무지개: 50.4°~53.4° (빨강→보라, 42% 강도)
+	float band2 = smoothstep(50.0, 50.4, ang) * smoothstep(53.8, 53.4, ang);
+	float hue2  = clamp((ang - 50.4) / (53.4 - 50.4), 0.0, 1.0);
+	vec3  col2  = hue_to_rgb(hue2 * 0.75) * band2 * 0.42;
+
+	vec3 col = col1 + col2;
+	ALBEDO = col * intensity * horizon_fade;
+	ALPHA  = clamp((band1 + band2 * 0.42) * intensity * horizon_fade * 3.0, 0.0, 1.0);
+}
+"""
+	_rainbow_mat = ShaderMaterial.new()
+	_rainbow_mat.shader = rshader
+	_rainbow_mat.set_shader_parameter("sun_dir",   Vector3(0.0, 1.0, 0.0))
+	_rainbow_mat.set_shader_parameter("intensity", 0.0)
+	_rainbow_mesh.material_override = _rainbow_mat
+	add_child(_rainbow_mesh)
+
 # ── 갱신 ─────────────────────────────────────────────────────────────
 func update(
 	sun_altaz: Vector2,
@@ -531,6 +594,8 @@ func update(
 	hour_utc: float,
 	latitude: float,
 	longitude: float,
+	temperature: float,
+	ground_wetness: float,
 	delta: float
 ) -> void:
 	_update_sky_and_lights(sun_altaz, moon, cloud_props, lightning_flash, delta)
@@ -541,6 +606,61 @@ func update(
 	_update_meteor(sun_altaz, cloud_props, dt, hour_utc, latitude, longitude, delta)
 	_update_comet(sun_altaz, dt, hour_utc, latitude, longitude)
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
+	_update_rainbow(sun_altaz, cloud_props, ground_wetness, delta)
+	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, delta)
+
+func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
+	var sky_cam: Camera3D = get_viewport().get_camera_3d()
+	var cam_origin: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
+	_rainbow_mesh.global_position = cam_origin
+
+	var sun_dir: Vector3 = _altaz_to_dir(sun_altaz.x, sun_altaz.y)
+	_rainbow_mat.set_shader_parameter("sun_dir", sun_dir)
+
+	# 무지개 조건: 태양 고도 1°~42°, 비 직후(ground_wetness), 구름 얇을수록 강함
+	var sun_elev: float = sun_altaz.x
+	var elev_factor: float = 0.0
+	if sun_elev >= 1.0 and sun_elev <= 42.0:
+		elev_factor = smoothstep(1.0, 8.0, sun_elev) * smoothstep(42.0, 34.0, sun_elev)
+	var cloud_fade: float  = clampf(1.0 - cloud_props["okta"] * 1.5, 0.0, 1.0)
+	var wet_factor: float  = clampf(ground_wetness / 0.35, 0.0, 1.0)
+	var target: float = elev_factor * cloud_fade * wet_factor
+	var spd: float = 0.6 if target > _rainbow_intensity else 0.12
+	_rainbow_intensity = lerpf(_rainbow_intensity, target, delta * spd)
+	_rainbow_mat.set_shader_parameter("intensity", _rainbow_intensity)
+	_rainbow_mesh.visible = _rainbow_intensity > 0.005
+
+func _update_fog(weather_type: String, rain_rate: float, temperature: float, wind_speed: float, cloud_props: Dictionary, delta: float) -> void:
+	var env: Environment = _world_env.environment
+	var target_density: float = 0.0
+	match weather_type:
+		"RAIN":
+			var frac: float = clampf(rain_rate / 50.0, 0.0, 1.0)
+			target_density = lerp(0.002, 0.012, frac)
+		"SNOW":
+			var frac: float = clampf(rain_rate / 30.0, 0.0, 1.0)
+			# 눈보라 조건 — Environment._classify_snow 와 동일 기준
+			if wind_speed > 8.0 and temperature < -3.0:
+				target_density = 0.025
+			else:
+				target_density = lerp(0.003, 0.015, frac)
+		"OVERCAST":
+			target_density = 0.001
+		_:
+			# 복사안개: 맑음 + 기온 -2~4°C
+			if cloud_props["okta"] < 0.3 and temperature > -2.0 and temperature < 4.0:
+				target_density = 0.005
+	var fog_spd: float = 0.3 if target_density > _fog_density_cur else 0.1
+	_fog_density_cur = lerpf(_fog_density_cur, target_density, delta * fog_spd)
+	var has_fog: bool = _fog_density_cur > 0.0001
+	env.fog_enabled = has_fog
+	if has_fog:
+		env.fog_density = _fog_density_cur
+		match weather_type:
+			"RAIN":  env.fog_light_color = Color(0.60, 0.65, 0.70)
+			"SNOW":  env.fog_light_color = Color(0.90, 0.92, 0.96)
+			_:       env.fog_light_color = Color(0.80, 0.82, 0.86)
+		env.fog_sun_scatter = 0.3
 
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
 	var elevation: float = sun_altaz.x
