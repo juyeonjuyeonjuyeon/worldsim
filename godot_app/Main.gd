@@ -382,7 +382,7 @@ func _roll_auto_weather(cur_month: int) -> void:
 		else:
 			weather_type = "CLEAR"
 
-	# 날씨 유형별 풍속 범위 (m/s), 풍향은 매 롤마다 랜덤
+	# 날씨 유형별 풍속 범위 (m/s)
 	var ws_min: float; var ws_max: float
 	match weather_type:
 		"CLEAR":    ws_min = 0.0; ws_max = 3.0
@@ -393,7 +393,37 @@ func _roll_auto_weather(cur_month: int) -> void:
 		"SNOW":     ws_min = 1.0; ws_max = 12.0
 		_:          ws_min = 0.0; ws_max = 5.0
 	_auto_wind_speed_target = _auto_wx_rng.randf_range(ws_min, ws_max)
-	_auto_wind_dir_target   = _auto_wx_rng.randf_range(0.0, 360.0)
+	# 탁월풍 기반 풍향 — 완전 랜덤 대신 기후대 편향, 날씨별 편차 폭 추가
+	var prevail_dir: float = _prevailing_wind_dir(latitude)
+	var spread: float
+	match weather_type:
+		"CLEAR":    spread = 20.0   # 맑음: 안정적, 탁월풍에 가깝게
+		"CIRRUS":   spread = 30.0
+		"CUMULUS":  spread = 40.0
+		"OVERCAST": spread = 55.0   # 저기압성 흐림: 기압 배치에 따라 편차 큼
+		"RAIN":     spread = 65.0   # 비: 저기압 중심으로 회전, 방향 흐트러짐
+		"SNOW":     spread = 50.0
+		_:          spread = 40.0
+	_auto_wind_dir_target = fmod(prevail_dir + _auto_wx_rng.randf_range(-spread, spread) + 360.0, 360.0)
+
+static func _prevailing_wind_dir(latitude: float) -> float:
+	# 위도별 탁월풍 방향 (바람이 '불어오는' 방향, 나침반 각도)
+	# 북반구 기준: 무역풍대(0-30°) NE→E, 편서풍대(30-60°) WSW, 극동풍대(60-90°) ENE
+	var abs_lat: float = abs(latitude)
+	var nh_dir: float
+	if abs_lat <= 30.0:
+		# 무역풍대: 북동(45°) → 아열대고압 동풍(90°)
+		nh_dir = lerp(45.0, 90.0, abs_lat / 30.0)
+	elif abs_lat <= 60.0:
+		# 편서풍대: 서남서(230°) → 서서남(245°)
+		nh_dir = lerp(230.0, 245.0, (abs_lat - 30.0) / 30.0)
+	else:
+		# 극동풍대: 동북동(60°) 고정
+		nh_dir = 60.0
+	if latitude < 0.0:
+		# 남반구: 남북 성분 반전 (180° - 북반구 방향) → SE 무역풍, WNW 편서풍 등
+		nh_dir = fmod(180.0 - nh_dir + 360.0, 360.0)
+	return nh_dir
 
 static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 	if x <= xs[0]:
