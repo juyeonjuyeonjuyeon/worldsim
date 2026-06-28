@@ -29,11 +29,14 @@ var _play_btn: Button       = null
 var _playing: bool          = true
 var _pending_font_scale: float = 2.0
 
-# 일 슬라이더 동적 최대값용
-var _day_sl: HSlider  = null
+# 날짜/시간 위젯 참조
+var _day_sl: HSlider  = null   # 구형 슬라이더 (null 유지)
 var _day_lbl: Label   = null
 var _cur_month: int   = 6
 var _cur_year: int    = 2026
+var _cur_day: int     = 21
+var _time_dial: TimeDialWidget  = null
+var _cal_widget: CalendarWidget = null
 
 # UTC 슬라이더 자동계산용
 var _utc_sl: HSlider  = null
@@ -80,6 +83,21 @@ func update_status(text: String) -> void:
 	if status_label:
 		status_label.text = text
 
+func update_time_ui(dt: Dictionary) -> void:
+	var y  := int(dt.get("year",  _cur_year))
+	var mo := int(dt.get("month", _cur_month))
+	var d  := int(dt.get("day",   _cur_day))
+	var h  := float(dt.get("hour", 12.0))
+	_cur_year  = y; _cur_month = mo; _cur_day = d
+	_pending["sim_year"]    = y
+	_pending["sim_month"]   = mo
+	_pending["sim_day"]     = d
+	_pending["time_of_day"] = h
+	if _time_dial:
+		_time_dial.set_hour(h)
+	if _cal_widget:
+		_cal_widget.set_date(y, mo, d)
+
 func set_playing(playing: bool) -> void:
 	_playing = playing
 	if _play_btn:
@@ -88,6 +106,7 @@ func set_playing(playing: bool) -> void:
 # ── 즉시 반영 ────────────────────────────────────────────────────────
 func _apply() -> void:
 	settings_confirmed.emit(_pending.duplicate())
+	_pending["_reset_elapsed"] = false
 
 # ── 입력 (스페이스바, 리사이즈) ──────────────────────────────────────
 func _input(event: InputEvent) -> void:
@@ -186,6 +205,7 @@ func _build_all(init: Dictionary) -> void:
 
 	_cur_month = init.get("sim_month", 6)
 	_cur_year  = init.get("sim_year",  2026)
+	_cur_day   = init.get("sim_day",   21)
 
 	# ── 상단 바 ──────────────────────────────────────────────
 	var top_bar := Panel.new()
@@ -337,6 +357,7 @@ func _build_all(init: Dictionary) -> void:
 		"show_constellations": init.get("show_constellations", false),
 		"use_fahrenheit":      init.get("use_fahrenheit",      false),
 		"auto_weather":        init.get("auto_weather",        false),
+		"_reset_elapsed":      false,
 	}
 
 	var check_h: int = maxi(24, int(fs_ctrl * 1.6))
@@ -430,64 +451,50 @@ func _build_all(init: Dictionary) -> void:
 	# ═════════════════════════════════════════════════════════
 	var vb_t := _make_tab(tab, "시간")
 
-	vb_t.add_child(_int_slider_row("연도", 1900, 2100, init.get("sim_year", 2026), func(v):
-		_pending["sim_year"] = v
-		_cur_year = v
-		_update_day_max()
-	))
-	vb_t.add_child(_int_slider_row("월", 1, 12, init.get("sim_month", 6), func(v):
-		_pending["sim_month"] = v
-		_cur_month = v
-		_update_day_max()
-	))
-
-	# 일 슬라이더 (월·연 연동 최대값)
-	var max_d_init := _max_day(_cur_year, _cur_month)
-	var day_box    := VBoxContainer.new()
-	day_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var day_lbl := Label.new()
-	day_lbl.text = "일: %d" % mini(init.get("sim_day", 21), max_d_init)
-	day_lbl.add_theme_font_size_override("font_size", _fs)
-	day_box.add_child(day_lbl)
-	var day_sl := HSlider.new()
-	day_sl.min_value             = 1.0
-	day_sl.max_value             = float(max_d_init)
-	day_sl.step                  = 1.0
-	day_sl.value                 = float(mini(init.get("sim_day", 21), max_d_init))
-	day_sl.custom_minimum_size   = Vector2(0, _slider_h)
-	day_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	day_sl.value_changed.connect(func(v):
-		_pending["sim_day"] = int(v)
-		day_lbl.text = "일: %d" % int(v)
+	# ── 달력 위젯 (날짜 선택) ───────────────────────────
+	_cal_widget = CalendarWidget.new()
+	_cal_widget.setup(fs_ctrl)
+	_cal_widget.set_date(_cur_year, _cur_month, _cur_day)
+	_cal_widget.date_changed.connect(func(y: int, mo: int, d: int):
+		_cur_year  = y; _cur_month = mo; _cur_day = d
+		_pending["sim_year"]       = y
+		_pending["sim_month"]      = mo
+		_pending["sim_day"]        = d
+		_pending["_reset_elapsed"] = true
 		_apply()
 	)
-	day_box.add_child(day_sl)
-	_day_sl  = day_sl
-	_day_lbl = day_lbl
-	vb_t.add_child(day_box)
+	vb_t.add_child(_cal_widget)
 
-	# 시간 슬라이더 (HH:MM 표시)
-	var tinit: float = init.get("time_of_day", 12.0)
-	var time_box := VBoxContainer.new()
-	time_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var time_lbl := Label.new()
-	time_lbl.text = "시간: %02d:%02d" % [int(tinit), int(fmod(tinit, 1.0) * 60.0)]
-	time_lbl.add_theme_font_size_override("font_size", _fs)
-	time_box.add_child(time_lbl)
-	var time_sl := HSlider.new()
-	time_sl.min_value             = 0.0
-	time_sl.max_value             = 24.0
-	time_sl.step                  = 1.0 / 60.0
-	time_sl.value                 = tinit
-	time_sl.custom_minimum_size   = Vector2(0, _slider_h)
-	time_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	time_sl.value_changed.connect(func(v):
-		_pending["time_of_day"] = v
-		time_lbl.text = "시간: %02d:%02d" % [int(v), int(fmod(v, 1.0) * 60.0)]
+	# ── 24h 아날로그 다이얼 ──────────────────────────
+	var dial_center := CenterContainer.new()
+	dial_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb_t.add_child(dial_center)
+
+	_time_dial = TimeDialWidget.new()
+	_time_dial.custom_minimum_size   = Vector2(160, 160)
+	_time_dial.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_time_dial.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+	_time_dial.set_hour(init.get("time_of_day", 12.0))
+	_time_dial.time_changed.connect(func(h: float):
+		_pending["time_of_day"]    = h
+		_pending["_reset_elapsed"] = true
 		_apply()
 	)
-	time_box.add_child(time_sl)
-	vb_t.add_child(time_box)
+	_time_dial.day_rolled.connect(func(delta: int):
+		var unix := Time.get_unix_time_from_datetime_dict(
+			{"year": _cur_year, "month": _cur_month, "day": _cur_day,
+			 "hour": 0, "minute": 0, "second": 0})
+		unix += float(delta) * 86400.0
+		var nd := Time.get_datetime_dict_from_unix_time(int(unix))
+		_cur_year  = int(nd["year"]); _cur_month = int(nd["month"]); _cur_day = int(nd["day"])
+		_pending["sim_year"]  = _cur_year
+		_pending["sim_month"] = _cur_month
+		_pending["sim_day"]   = _cur_day
+		if _cal_widget:
+			_cal_widget.set_date(_cur_year, _cur_month, _cur_day)
+		# time_changed가 뒤이어 _apply()를 호출하므로 여기선 생략
+	)
+	dial_center.add_child(_time_dial)
 
 	vb_t.add_child(HSeparator.new())
 
@@ -696,6 +703,20 @@ func _build_all(init: Dictionary) -> void:
 		tbtn.pressed.connect(func(): test_event_requested.emit(ename))
 		test_row.add_child(tbtn)
 	vb_test.add_child(test_row)
+
+	# 특수현상 행 — 효과 미구현, TODO 스텁 (ROADMAP Phase 1)
+	var special_row := HBoxContainer.new()
+	special_row.add_theme_constant_override("separation", maxi(2, int(4 * s)))
+	for pair: Array in [["일식", "solar_eclipse"], ["월식", "lunar_eclipse"], ["오로라", "aurora"], ["무지개↑", "rainbow_force"]]:
+		var tbtn := Button.new()
+		tbtn.text                  = pair[0]
+		tbtn.add_theme_font_size_override("font_size", fs_ctrl)
+		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tbtn.modulate.a            = 0.55  # 미구현 표시
+		var ename: String = pair[1]
+		tbtn.pressed.connect(func(): test_event_requested.emit(ename))
+		special_row.add_child(tbtn)
+	vb_test.add_child(special_row)
 
 	settings_btn.pressed.connect(func(): panel.visible = not panel.visible)
 

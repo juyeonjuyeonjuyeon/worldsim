@@ -171,6 +171,8 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	sim_month          = int(s.get("sim_month",  sim_month))
 	sim_day            = int(s.get("sim_day",    sim_day))
 	time_of_day        = s.get("time_of_day",        time_of_day)
+	if s.get("_reset_elapsed", false):
+		elapsed_play_seconds = 0.0
 	var new_rt: bool   = s.get("real_time_mode",     real_time_mode)
 	if new_rt != real_time_mode:
 		real_time_mode = new_rt
@@ -194,6 +196,11 @@ func _on_test_event(event_name: String) -> void:
 		"meteor":    _sky.trigger_meteor(false)
 		"shower":    _sky.trigger_meteor(true)
 		"comet":     _sky.trigger_comet_test()
+		# TODO Phase 1: 특수현상 — 효과 미구현
+		"solar_eclipse":  push_warning("TODO solar_eclipse: 일식 셰이더 미구현 (Phase 1)")
+		"lunar_eclipse":  push_warning("TODO lunar_eclipse: 월식 붉은달 셰이더 미구현 (Phase 1)")
+		"aurora":         push_warning("TODO aurora: 오로라 볼류메트릭 미구현 (Phase 1)")
+		"rainbow_force":  push_warning("TODO rainbow_force: 무지개 강제 표시 미구현 (Phase 1)")
 
 func _set_view_mode(mode: String) -> void:
 	_camera.set_view_mode(mode)
@@ -259,6 +266,7 @@ func _update_all(delta: float) -> void:
 	_sound.update(weather_type, wind_enabled, wind_speed, rain_rate, delta)
 
 	if _ui:
+		_ui.update_time_ui(dt)
 		var h: int = int(dt["hour"])
 		var m: int = int(fmod(dt["hour"], 1.0) * 60)
 		var lat_str: String = "%.2f°%s" % [abs(latitude), "N" if latitude >= 0.0 else "S"]

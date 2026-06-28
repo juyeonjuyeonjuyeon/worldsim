@@ -92,19 +92,18 @@ void vertex() {
 	float hx  = terrain_h(VERTEX.xz + vec2(eps, 0.0));
 	float hz  = terrain_h(VERTEX.xz + vec2(0.0, eps));
 	VERTEX.y += h;
-	vec3 terrain_n = normalize(vec3(-(hx - h) / eps, 1.0, -(hz - h) / eps));
-	// edge_fade 구간에서 노멀을 (0,1,0)으로 평탄화 → horizon_plane과 조명 연속성 유지
-	float dist_v = length(VERTEX.xz - camera_xz);
-	float fade_v = smoothstep(18.0, 28.0, dist_v);
-	NORMAL = normalize(mix(terrain_n, vec3(0.0, 1.0, 0.0), fade_v));
+	// 자연 지형 노멀 그대로 — (0,1,0)으로 강제하면 태양 고도에 따라
+	// 밝은/어두운 띠가 뒤집히므로 수정하지 않음
+	NORMAL = normalize(vec3(-(hx - h) / eps, 1.0, -(hz - h) / eps));
 	// ground mesh는 origin 고정 → local XZ = world XZ
 	v_world_xz = VERTEX.xz;
 }
 
 void fragment() {
-	// 카메라에서의 수평 거리 → 18m부터 페이드 시작, 28m에서 완전히 지평선 색
+	// 카메라에서의 수평 거리 → 10m부터 완만하게 페이드 시작, 28m에서 완전히 지평선 색
+	// (시작을 앞당겨 경계를 완화 — 노멀 수정 없이 자연 조명 변화 유지)
 	float dist     = length(v_world_xz - camera_xz);
-	float edge_fade = smoothstep(18.0, 28.0, dist);
+	float edge_fade = smoothstep(10.0, 28.0, dist);
 	ALBEDO    = mix(albedo.rgb, horizon_color, edge_fade);
 	ROUGHNESS = roughness;
 	SPECULAR  = 0.04;

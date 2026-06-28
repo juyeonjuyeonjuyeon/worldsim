@@ -292,11 +292,14 @@ uniform float cloud_fade    : hint_range(0.0, 1.0) = 1.0;
 uniform float horizon_fade  : hint_range(0.0, 1.0) = 1.0;
 
 varying vec3 world_normal;
+varying float v_world_dir_y;
 
 void vertex() {
 	world_normal = normalize((MODEL_MATRIX * vec4(VERTEX, 0.0)).xyz);
-	POSITION = PROJECTION_MATRIX * VIEW_MATRIX * MODEL_MATRIX * vec4(VERTEX, 1.0);
-	POSITION.z = POSITION.w * 0.9999;
+	vec4 vert_view = VIEW_MATRIX * MODEL_MATRIX * vec4(VERTEX, 1.0);
+	POSITION = PROJECTION_MATRIX * vert_view;
+	// 수평선 클립 기준: 이 버텍스의 월드 방향 Y 성분 (0=수평선, +위, -아래)
+	v_world_dir_y = (INV_VIEW_MATRIX * vec4(normalize(vert_view.xyz), 0.0)).y;
 }
 
 void fragment() {
@@ -307,9 +310,9 @@ void fragment() {
 	vec3 cloud_white = vec3(0.78, 0.82, 0.98) * exposure_safe;
 	bright_col = mix(bright_col, cloud_white, (1.0 - cloud_fade) * 0.8);
 	ALBEDO = bright_col;
-	// 어두운 면: ALPHA=0 / 밝은 면: ALPHA=lit
-	// horizon_fade: 고도 −3°→+1° smoothstep → 지평선 아래로 가라앉으며 페이드
-	ALPHA  = lit * cloud_fade * horizon_fade;
+	// 수평선 클립: 카메라 기준 실제 지평선에서 달을 자름 (±0.005 ≈ ±0.29° 전환)
+	float ground_fade = smoothstep(-0.005, 0.005, v_world_dir_y);
+	ALPHA  = lit * cloud_fade * horizon_fade * ground_fade;
 }
 """
 	_moon_shader_mat.shader = moon_shader
@@ -337,13 +340,15 @@ uniform float cloud_fade    : hint_range(0.0, 1.0)   = 1.0;
 uniform float horizon_fade  : hint_range(0.0, 1.0)   = 1.0;
 // 사람눈 모드: 1.5 (크고 부드러운 광환), 카메라 모드: 0.8 (좁은 렌즈 블룸)
 uniform float glare_scale   : hint_range(0.5, 2.0)   = 1.0;
-// 태양 고도(도) — 지평선 절단 위치 계산용. 위치·방위 계산과 무관, 렌더링 전용.
-uniform float sun_elev_deg  : hint_range(-10.0, 90.0) = 10.0;
+
+varying float v_world_dir_y;
 
 void vertex() {
 	vec4 center_view = VIEW_MATRIX * MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
-	POSITION = PROJECTION_MATRIX * (center_view + vec4(VERTEX.xy, 0.0, 0.0));
-	POSITION.z = POSITION.w * 0.9999;
+	vec4 vert_view = center_view + vec4(VERTEX.xy, 0.0, 0.0);
+	POSITION = PROJECTION_MATRIX * vert_view;
+	// 수평선 클립 기준: 이 버텍스의 월드 방향 Y 성분 (0=수평선, +위, -아래)
+	v_world_dir_y = (INV_VIEW_MATRIX * vec4(normalize(vert_view.xyz), 0.0)).y;
 }
 
 void fragment() {
@@ -360,13 +365,9 @@ void fragment() {
 	float halo = exp(-d * (1.3 / glare_scale)) * (0.55 * glare_scale);
 	float glow = (core + halo) * rmask;
 
-	// 지평선 절단: 태양 고도에 따라 UV.y 기준으로 지평면을 모사
-	// quad 반각 = atan(4.5/100)×(180/π) ≈ 2.578° → UV 전체 범위 ≈ 5.156°
-	// horizon_uv: 0.5(elevation=0°), <0.5(양의 고도=태양이 지평선 위), >0.5(음의 고도=아래)
-	// 이 방식은 depth buffer가 아닌 각도 기반이지만, 지형 max 0.25m vs eye 1.7m라서
-	// 실제 depth occlusion은 이 씬에서 양의 고도에서 작동 불가 → UV 기반이 유일한 현실적 대안
-	float horizon_uv  = 0.5 - sun_elev_deg / 5.156;
-	float ground_fade = smoothstep(horizon_uv - 0.015, horizon_uv + 0.015, UV.y);
+	// 지평선 클립: 카메라 기준 실제 수평선에서 자름
+	// ±0.005 ≈ ±0.29° 전환 대역 (디스크 반경 0.265°보다 약간 넓어 앤티앨리어싱)
+	float ground_fade = smoothstep(-0.005, 0.005, v_world_dir_y);
 
 	// 대기 헤이즈: 지평선 근처에서 outer glow를 따뜻한 주황으로 블렌딩
 	float haze_t     = clamp((1.0 - horizon_fade) * 1.5, 0.0, 1.0);
@@ -374,7 +375,7 @@ void fragment() {
 	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t);
 
 	// horizon_fade: 고도 −3°→+1° smoothstep (대기 감쇠 / haze_t 연동)
-	// ground_fade: 지평면 절단 (sink를 대체 — 고도 기반 정밀 위치)
+	// ground_fade: 카메라 수평선 기준 지평면 절단
 	ALPHA = clamp((disc + glow) * cloud_fade * horizon_fade * ground_fade, 0.0, 1.0);
 }
 """
@@ -385,7 +386,6 @@ void fragment() {
 	_sun_shader_mat.set_shader_parameter("cloud_fade",    1.0)
 	_sun_shader_mat.set_shader_parameter("horizon_fade", 1.0)
 	_sun_shader_mat.set_shader_parameter("glare_scale",  1.5)
-	_sun_shader_mat.set_shader_parameter("sun_elev_deg", 10.0)
 	_sun_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_sun_mesh.material_override = _sun_shader_mat
 	add_child(_sun_mesh)
@@ -817,7 +817,6 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sun_horizon_fade: float = smoothstep(-3.0, 1.0, elevation)
 	_sun_mesh.visible = elevation > -3.5
 	_sun_shader_mat.set_shader_parameter("horizon_fade",  sun_horizon_fade)
-	_sun_shader_mat.set_shader_parameter("sun_elev_deg",  elevation)  # 지평선 절단용
 
 	# 태양 색온도: 0°→주황(~3000K), 28°+→흰색(~5800K). 25–30°에서 황백색이 됨(실측).
 	var warm: float        = clampf(1.0 - elevation / 28.0, 0.0, 1.0)
@@ -847,9 +846,10 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		exposure_ev = lerp(exposure_ev, 0.0, lightning_flash)
 	# FP16 HDR 버퍼 최솟값(6e-5) 대비 tonemap 보정 상한 = 2^4 = 16×
 	# 이 이상은 FP16 양자화 오차가 증폭되어 분홍/초록 노이즈로 나타남
-	# 낮→밤 급전환 방지: delta 기반 부드러운 스무딩 적용
 	const EV_MAX: float = 4.0
 	var target_exp: float = clampf(pow(2.0, exposure_ev), 0.5, pow(2.0, EV_MAX))
+	# 자동진행 중 부드러운 스무딩 (급격한 낮↔밤 밝기 점프 완화)
+	# delta=0 시 가중치=0 → _current_exposure 유지 (자정 교차·설정 변경 시 점프 없음)
 	_current_exposure = lerp(_current_exposure, target_exp, clampf(delta * 2.0, 0.0, 1.0))
 	var exposure_mult: float = _current_exposure
 	_sun_light.light_energy  = min(clampf(sun_lux / 100000.0 * 3.0, 0.0, 6.0), 6.0 / exposure_mult)
@@ -870,6 +870,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_sun_shader_mat.set_shader_parameter("glare_scale", 1.5 if _eye_view else 0.8)
 
 	# ── 밤하늘 기본색 (moon_sky_factor: 보름달=2.5×) ─────────────────────
+	# ProceduralSkyMaterial은 tonemap_exposure 보정을 받지 않음 → brt 제거, 표시값 직접 지정
+	# * 16.0: 표시용 밝기 스케일 (brt=1일 때의 기존 값과 동일)
 	var moon_sky_factor: float = 1.0 + clampf(moon_lux / 0.27, 0.0, 1.0) * 1.5
 	var scotopic_r: float = scotopic_boost * (0.80 if _eye_view else 1.0)
 	var scotopic_g: float = scotopic_boost * (0.90 if _eye_view else 1.0)
@@ -877,11 +879,11 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var night_top := Color(
 		0.00190 * moon_sky_factor * scotopic_r,
 		0.00218 * moon_sky_factor * scotopic_g,
-		0.00358 * moon_sky_factor * scotopic_b)
+		0.00358 * moon_sky_factor * scotopic_b) * 16.0
 	var night_horizon := Color(
 		0.00080 * moon_sky_factor * scotopic_r,
 		0.00085 * moon_sky_factor * scotopic_g,
-		0.00140 * moon_sky_factor * scotopic_b)
+		0.00140 * moon_sky_factor * scotopic_b) * 16.0
 
 	# ── 박명 4단계 블렌드 인자 ───────────────────────────────────────────
 	# 시민박명(civil): 0° → −6° (0→1)
@@ -891,18 +893,15 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 천문박명(astronomical): −12° → −18° (0→1)
 	var astro_t: float  = clampf((-elevation - 12.0) / 6.0, 0.0, 1.0)
 
-	# ── 박명 하늘 색 정의 (sky_brightness_safe로 노출 스케일) ─────────────
-	var brt: float = sky_brightness_safe
-
-	# 상단(zenith) 색
+	# 상단(zenith) 색 — 표시값 직접 지정 (brt 제거)
 	# 낮(high sun): 맑은 파랑
-	var day_top      := Color(0.35, 0.55, 0.95) * brt
+	var day_top      := Color(0.35, 0.55, 0.95)
 	# 일몰 직전(warm>0, civil 시작 전): 따뜻한 보라/자주
-	var sunset_top   := Color(0.42, 0.33, 0.58) * brt
+	var sunset_top   := Color(0.42, 0.33, 0.58)
 	# 시민박명(civil): 깊은 청자 — 상단은 이미 어두운 파랑
-	var civil_top    := Color(0.18, 0.28, 0.72) * brt
+	var civil_top    := Color(0.18, 0.28, 0.72)
 	# 항해박명(nautical): 더 어두운 파랑
-	var naut_top     := Color(0.06, 0.09, 0.30) * brt
+	var naut_top     := Color(0.06, 0.09, 0.30)
 
 	# 순차 체인: 각 페이즈가 이전 끝점에서 시작 → 중간 합산 오류 없음
 	var top_sunset := day_top.lerp(sunset_top, warm)
@@ -910,11 +909,11 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	top = top.lerp(naut_top,  naut_t)
 	top = top.lerp(night_top, astro_t)
 
-	# 지평선 색
-	var day_horizon    := Color(0.75, 0.80, 0.90) * brt
-	var sunset_horizon := Color(1.00, 0.52, 0.18) * brt
-	var civil_hor      := Color(0.82, 0.28, 0.12) * brt
-	var naut_hor       := Color(0.16, 0.20, 0.52) * brt
+	# 지평선 색 — 표시값 직접 지정 (brt 제거)
+	var day_horizon    := Color(0.75, 0.80, 0.90)
+	var sunset_horizon := Color(1.00, 0.52, 0.18)
+	var civil_hor      := Color(0.82, 0.28, 0.12)
+	var naut_hor       := Color(0.16, 0.20, 0.52)
 
 	var hor_sunset := day_horizon.lerp(sunset_horizon, warm)
 	var horizon: Color = hor_sunset.lerp(civil_hor,     civil_t)
@@ -937,14 +936,14 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 태양은 얇은 구름에서도 어느 정도 보임 (달보다 밝아서)
 	var sun_cloud_fade: float = clampf(1.0 - sky_overcast_amt * 0.85, 0.0, 1.0)
 	_sun_shader_mat.set_shader_parameter("cloud_fade", sun_cloud_fade)
-	var overcast_grey: Color = Color(0.42, 0.44, 0.47) * sky_brightness_safe
+	var overcast_grey: Color = Color(0.42, 0.44, 0.47)
 	top     = top.lerp(overcast_grey,    sky_overcast_amt * (1.0 - sky_night_blend))
 	horizon = horizon.lerp(overcast_grey, sky_overcast_amt * (1.0 - sky_night_blend))
 	top.a = 1.0; horizon.a = 1.0
 	_sky_mat.sky_top_color      = top
 	_sky_mat.sky_horizon_color  = horizon
 	_sky_mat.ground_horizon_color = horizon
-	var ground_bottom: Color    = Color(0.05, 0.05, 0.05) * sky_brightness_safe
+	var ground_bottom: Color    = Color(0.05, 0.05, 0.05)
 	ground_bottom.a = 1.0
 	_sky_mat.ground_bottom_color = ground_bottom
 
@@ -1043,7 +1042,9 @@ func _update_planets(dt: Dictionary, hour_utc: float, latitude: float, longitude
 		var pogson_b: float    = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
 		mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, pogson_b * twilight))
 		var dir: Vector3   = _altaz_to_dir(ps["alt"], ps["az"])
-		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 3.5)
+		# 행성은 각지름이 거의 0 → 점(point)으로 렌더; 최대 0.80m @ 400m = 0.11°
+		# 달 디스크(0.52°)보다 훨씬 작게 유지
+		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 0.80)
 		mm.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
 
 func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
