@@ -190,6 +190,7 @@ func _on_play_state_changed(playing: bool) -> void:
 	_paused = not playing
 	if _camera:
 		_camera.paused = _paused
+	_update_all(0.0)  # 상태바 ⏸ 즉시 반영
 
 func _set_aspect(ratio: String) -> void:
 	var size: Vector2i
