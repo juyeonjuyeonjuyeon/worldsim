@@ -234,7 +234,7 @@ func _update_all(delta: float) -> void:
 	var moon: Dictionary = Astronomy.moon_state(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
 	var cloud_props: Dictionary = _weather_cloud_props()
 
-	sim_temperature = _estimate_temperature(dt["month"], int(dt["day"]), fmod(dt["hour"], 24.0), latitude, weather_type)
+	sim_temperature = _estimate_temperature(dt["month"], int(dt["day"]), fmod(dt["hour"], 24.0), latitude, longitude, weather_type)
 	if auto_weather:
 		_update_auto_weather(delta, dt["month"])
 	_sky.show_constellations = show_constellations
@@ -300,8 +300,8 @@ func _current_datetime() -> Dictionary:
 		return {"year": d["year"], "month": d["month"], "day": d["day"], "hour": hour}
 	return {"year": sim_year, "month": sim_month, "day": sim_day, "hour": time_of_day}
 
-static func _estimate_temperature(month: int, day: int, hour_local: float, latitude: float, p_weather: String) -> float:
-	# 위도별 기후 근사 — 해양·대륙 혼합 단순 모델
+static func _estimate_temperature(month: int, day: int, hour_local: float, latitude: float, longitude: float, p_weather: String) -> float:
+	# 위도별 기후 근사 — 경도 보정 포함
 	# 위도별 연 평균 기온: 0°=26°C, 25°=22°C, 45°=11°C, 65°=0°C, 90°=-20°C
 	const LAT_P:     Array = [0.0, 25.0, 45.0, 65.0, 90.0]
 	const MEAN_P:    Array = [26.0, 22.0, 11.0, 0.0, -20.0]
@@ -310,8 +310,10 @@ static func _estimate_temperature(month: int, day: int, hour_local: float, latit
 	# 위도별 일교차 진폭: 열대≈4°C, 아열대≈7°C, 온대≈9°C, 한대≈8°C, 극≈4°C
 	const DIURNAL_P: Array = [4.0, 7.0, 9.0, 8.0, 4.0]
 	var abs_lat: float      = abs(latitude)
-	var annual_mean: float  = _lerp_breakpoints(abs_lat, LAT_P, MEAN_P)
-	var seasonal_amp: float = _lerp_breakpoints(abs_lat, LAT_P, AMP_P)
+	# 경도 보정: 대륙성·해양성·몬순 지역별 연평균·계절진폭 보정
+	var bias: Dictionary    = _get_climate_bias(latitude, longitude, month)
+	var annual_mean: float  = _lerp_breakpoints(abs_lat, LAT_P, MEAN_P) + float(bias["mean_offset"])
+	var seasonal_amp: float = _lerp_breakpoints(abs_lat, LAT_P, AMP_P) * float(bias["amp_mult"])
 	var diurnal_amp: float  = _lerp_breakpoints(abs_lat, LAT_P, DIURNAL_P)
 	# 날짜 연속 월 — 월 경계를 매끄럽게 보간 (1일=month, 말일≈month+1)
 	var month_f: float = float(month) + float(day - 1) / 30.0
@@ -356,10 +358,12 @@ func _update_auto_weather(delta: float, cur_month: int) -> void:
 
 func _roll_auto_weather(cur_month: int) -> void:
 	var params: Dictionary = WorldSimWeather.get_params(latitude, cur_month)
+	var bias:   Dictionary = _get_climate_bias(latitude, longitude, cur_month)
 	# 다음 날씨 지속: 1-4 시뮬레이션 일 (= 86400 sim초/일)
 	_auto_wx_sim_timer = _auto_wx_rng.randf_range(86400.0, 86400.0 * 4.0)
 
-	if _auto_wx_rng.randf() < float(params["precip_prob"]):
+	var adj_precip: float = clampf(float(params["precip_prob"]) * float(bias["precip_mult"]), 0.0, 0.98)
+	if _auto_wx_rng.randf() < adj_precip:
 		# 강수 결정 — 눈/비 판정: 기후 경향 + 온도 보정
 		var sb: float = float(params["snow_bias"])
 		if sim_temperature < 0.0:
@@ -406,6 +410,111 @@ func _roll_auto_weather(cur_month: int) -> void:
 		"SNOW":     spread = 50.0
 		_:          spread = 40.0
 	_auto_wind_dir_target = fmod(prevail_dir + _auto_wx_rng.randf_range(-spread, spread) + 360.0, 360.0)
+
+static func _get_climate_bias(latitude: float, longitude: float, month: int) -> Dictionary:
+	# 위도+경도 기반 기후 보정 (동일 위도라도 대륙/해양/몬순 차이 반영)
+	# precip_mult: 강수 확률 배율  amp_mult: 계절 진폭 배율  mean_offset: 연평균 온도 보정(°C)
+	var precip_mult: float = 1.0
+	var amp_mult:    float = 1.0
+	var mean_offset: float = 0.0
+	# 남반구는 계절 6개월 반전 후 강수 패턴 체크
+	var eff_m: int = (month - 1 + (6 if latitude < 0.0 else 0)) % 12  # 0-indexed
+
+	# ── 인도아대륙 남아시아 몬순 ─────────────────────────────────────────
+	if latitude >= 5.0 and latitude <= 30.0 and longitude >= 65.0 and longitude <= 92.0:
+		amp_mult    *= 0.85
+		mean_offset += 2.0   # 위도 모델보다 실제 기온이 높음
+		if eff_m >= 5 and eff_m <= 8:     # Jun-Sep 우기 (남서 계절풍)
+			precip_mult *= 4.0
+		elif eff_m >= 9 and eff_m <= 10:  # Oct-Nov 후몬순 잔류
+			precip_mult *= 1.2
+		else:                              # Dec-May 건기
+			precip_mult *= 0.12
+
+	# ── 동아시아 대륙성 + 장마 (한국·만주·화북·동북 중국) ───────────────
+	if latitude >= 32.0 and latitude <= 49.0 and longitude >= 115.0 and longitude <= 132.0:
+		amp_mult    *= 1.9   # 시베리아 고기압 영향으로 계절 진폭 극대화
+		mean_offset -= 4.0   # 위도 모델보다 실제 겨울이 훨씬 추움
+		if eff_m >= 5 and eff_m <= 7:     # Jun-Aug 장마
+			precip_mult *= 2.5
+		elif eff_m >= 8 and eff_m <= 9:   # Sep-Oct 태풍·가을비
+			precip_mult *= 1.4
+		elif eff_m <= 1 or eff_m == 11:   # Dec-Feb 건조 고기압
+			precip_mult *= 0.6
+
+	# ── 일본 열도 해양성 + 장마 ──────────────────────────────────────────
+	if latitude >= 30.0 and latitude <= 45.0 and longitude >= 130.0 and longitude <= 146.0:
+		amp_mult    *= 1.15  # 한반도보다 해양성, 진폭 적당
+		mean_offset += 1.0
+		if eff_m >= 5 and eff_m <= 7:     # Jun-Aug 장마
+			precip_mult *= 2.0
+		elif eff_m >= 8 and eff_m <= 9:   # Sep-Oct 태풍
+			precip_mult *= 1.6
+
+	# ── 지중해 기후 (유럽·북아프리카·레반트) ────────────────────────────
+	if latitude >= 30.0 and latitude <= 46.0 and longitude >= -10.0 and longitude <= 42.0:
+		amp_mult    *= 0.9
+		mean_offset += 2.0   # 해양·일조량이 연평균 끌어올림
+		if eff_m >= 5 and eff_m <= 8:     # Jun-Sep 건기
+			precip_mult *= 0.12
+		elif eff_m <= 1 or eff_m >= 10:   # Nov-Mar 우기
+			precip_mult *= 1.9
+
+	# ── 서유럽 해양성 (멕시코만류 영향권: 영국·프랑스·저지대·독일 북부) ──
+	if latitude >= 46.0 and latitude <= 62.0 and longitude >= -12.0 and longitude <= 20.0:
+		amp_mult    *= 0.65  # 대서양이 계절 진폭 크게 완화
+		mean_offset += 3.0   # 멕시코만류로 겨울 온화
+
+	# ── 시베리아 대륙성 극한 ─────────────────────────────────────────────
+	if latitude >= 50.0 and latitude <= 68.0 and longitude >= 60.0 and longitude <= 140.0:
+		amp_mult    *= 1.7
+		mean_offset -= 8.0   # 광대한 대륙이 겨울을 극단적으로 냉각
+		if eff_m <= 1 or eff_m == 11:     # Dec-Feb 시베리아 고기압 → 건조
+			precip_mult *= 0.5
+
+	# ── 중앙아시아 건조 스텝·사막 (카자흐스탄·투르크메니스탄) ──────────
+	if latitude >= 35.0 and latitude <= 52.0 and longitude >= 45.0 and longitude <= 80.0:
+		amp_mult    *= 1.4
+		mean_offset -= 2.0
+		precip_mult *= 0.5   # 내륙 건조, 연중 적음
+
+	# ── 미국 대평원 대륙성 ───────────────────────────────────────────────
+	if latitude >= 35.0 and latitude <= 52.0 and longitude >= -110.0 and longitude <= -88.0:
+		amp_mult *= 1.4
+
+	# ── 캘리포니아 지중해 ────────────────────────────────────────────────
+	if latitude >= 34.0 and latitude <= 42.0 and longitude >= -125.0 and longitude <= -116.0:
+		amp_mult    *= 0.70  # 해양성 — 계절 진폭 작음
+		mean_offset -= 1.0   # 캘리포니아 한류(California Current) 냉각
+		if eff_m >= 5 and eff_m <= 8:     # Jun-Sep 건기
+			precip_mult *= 0.05
+		elif eff_m <= 1 or eff_m >= 10:   # Nov-Mar 우기
+			precip_mult *= 1.8
+
+	# ── 호주 북부 몬순 (12월-3월이 우기 = SH 여름) ──────────────────────
+	if latitude >= -20.0 and latitude <= -5.0 and longitude >= 125.0 and longitude <= 155.0:
+		amp_mult *= 0.85
+		if eff_m >= 5 and eff_m <= 8:     # SH 여름(Dec-Mar)에 해당하는 eff_m
+			precip_mult *= 3.5
+		else:
+			precip_mult *= 0.15
+
+	# ── 남아프리카 지중해 (케이프타운) ──────────────────────────────────
+	if latitude >= -36.0 and latitude <= -28.0 and longitude >= 16.0 and longitude <= 26.0:
+		if eff_m <= 1 or eff_m == 11:     # SH 겨울(Jun-Aug) = 우기
+			precip_mult *= 1.8
+		elif eff_m >= 5 and eff_m <= 8:   # SH 여름(Dec-Feb) = 건기
+			precip_mult *= 0.15
+
+	# ── 남반구 서부 해양성 (남칠레·파타고니아·뉴질랜드 남도) ────────────
+	if latitude <= -40.0 and latitude >= -58.0:
+		var lon_ok: bool = longitude <= -65.0 or longitude >= 165.0
+		if lon_ok:
+			amp_mult    *= 0.60
+			mean_offset += 2.0
+			precip_mult *= 1.4
+
+	return {"precip_mult": precip_mult, "amp_mult": amp_mult, "mean_offset": mean_offset}
 
 static func _prevailing_wind_dir(latitude: float) -> float:
 	# 위도별 탁월풍 방향 (바람이 '불어오는' 방향, 나침반 각도)
