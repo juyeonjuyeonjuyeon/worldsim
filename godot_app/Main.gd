@@ -336,8 +336,9 @@ static func _estimate_temperature(month: int, day: int, hour_local: float, latit
 			diurnal_scale  = 0.60
 		"CUMULUS":
 			diurnal_scale  = 0.85
-	# 일교차: 오후 2시 최고, 새벽 최저 (위도별 진폭, 날씨에 따라 축소)
-	var day_offset: float = -diurnal_amp * diurnal_scale * cos((hour_local - 14.0) * PI / 12.0)
+	# 일교차: 오후 2시 최고, 새벽 2시 최저 (위도별 진폭, 날씨에 따라 축소)
+	# cos(hour-14)는 14시=1(최대), 2시=-1(최소) → +부호로 14시 최고기온
+	var day_offset: float = diurnal_amp * diurnal_scale * cos((hour_local - 14.0) * PI / 12.0)
 	return monthly_base + day_offset + weather_offset
 
 func _update_auto_weather(delta: float, cur_month: int) -> void:
