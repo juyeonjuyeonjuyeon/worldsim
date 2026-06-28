@@ -51,11 +51,13 @@ var elapsed_play_seconds: float = 0.0
 var sim_temperature: float = 15.0
 
 # ── 모듈 참조 ──
-var _sky    = null
-var _env    = null
-var _sound  = null
-var _camera = null
-var _ui     = null
+var _sky        = null
+var _env        = null
+var _sound      = null
+var _camera     = null
+var _ui         = null
+var _eye_canvas: CanvasLayer = null
+var _eye_rect: ColorRect     = null
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -92,10 +94,25 @@ func _ready() -> void:
 	add_child(_camera)
 	_camera.build()
 
+	# 사람눈 뷰 후처리: 색 수차(Chromatic Aberration) + 비네트
+	var eye_shader: Shader = load("res://eye_postfx.gdshader")
+	var eye_mat := ShaderMaterial.new()
+	eye_mat.shader = eye_shader
+	_eye_rect = ColorRect.new()
+	_eye_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_eye_rect.material = eye_mat
+	_eye_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_eye_rect.visible = _camera.eye_view
+	_eye_canvas = CanvasLayer.new()
+	_eye_canvas.layer = 0
+	_eye_canvas.add_child(_eye_rect)
+	add_child(_eye_canvas)
+
 	_ui.settings_confirmed.connect(_on_settings_confirmed)
 	_ui.view_mode_requested.connect(_set_view_mode)
 	_ui.aspect_requested.connect(_set_aspect)
 	_ui.test_event_requested.connect(_on_test_event)
+	_ui.eye_view_requested.connect(_on_eye_view_requested)
 	_ui.build(_ui_init_dict())
 	_update_all(0.0)
 
@@ -120,6 +137,7 @@ func _ui_init_dict() -> Dictionary:
 		"rain_streak_scale":     rain_streak_scale,
 		"snow_size_scale":       snow_size_scale,
 		"show_constellations":   show_constellations,
+		"eye_view":              _camera.eye_view,
 	}
 
 func _on_settings_confirmed(s: Dictionary) -> void:
@@ -161,6 +179,11 @@ func _on_test_event(event_name: String) -> void:
 
 func _set_view_mode(mode: String) -> void:
 	_camera.set_view_mode(mode)
+
+func _on_eye_view_requested(enabled: bool) -> void:
+	_camera.set_eye_view(enabled)
+	if _eye_rect:
+		_eye_rect.visible = enabled
 
 func _set_aspect(ratio: String) -> void:
 	var size: Vector2i

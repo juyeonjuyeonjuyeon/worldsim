@@ -5,6 +5,7 @@ signal settings_confirmed(s: Dictionary)
 signal view_mode_requested(mode: String)
 signal aspect_requested(ratio: String)
 signal test_event_requested(event_name: String)
+signal eye_view_requested(enabled: bool)
 
 const _CFG := "user://window_state.cfg"
 
@@ -326,6 +327,20 @@ func _build_all(init: Dictionary) -> void:
 		view_row.add_child(vbtn)
 	vb.add_child(_labeled("시점", view_row))
 
+	var eye_row   := HBoxContainer.new()
+	var eye_group := ButtonGroup.new()
+	var cur_eye: bool = init.get("eye_view", true)
+	for em: Array in [["사람눈", true], ["카메라", false]]:
+		var ebtn := Button.new()
+		ebtn.text         = em[0]
+		ebtn.toggle_mode  = true
+		ebtn.button_group = eye_group
+		if em[1] == cur_eye:
+			ebtn.button_pressed = true
+		ebtn.pressed.connect(func(): eye_view_requested.emit(em[1]))
+		eye_row.add_child(ebtn)
+	vb.add_child(_labeled("뷰 모드", eye_row))
+
 	var aspect_row := HBoxContainer.new()
 	for ar: String in ["16:9", "9:16", "1:1"]:
 		var abtn := Button.new()
@@ -335,7 +350,7 @@ func _build_all(init: Dictionary) -> void:
 	vb.add_child(_labeled("화면비율", aspect_row))
 
 	var cam_help := Label.new()
-	cam_help.text         = "카메라: 우클릭으로 시점모드 켜고끄기 (Esc로도 끔), WASD 이동, 스크롤로 속도조절."
+	cam_help.text         = "카메라: 우클릭 시점모드(Esc 해제), WASD 이동. 일반모드 스크롤: 화각 조절, F 초기화."
 	cam_help.autowrap_mode = TextServer.AUTOWRAP_WORD
 	cam_help.add_theme_font_size_override("font_size", fs_label)
 	vb.add_child(cam_help)

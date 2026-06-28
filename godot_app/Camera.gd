@@ -7,15 +7,13 @@ const MOVE_BOUND: float    = 25.0
 
 var view_mode: String = "NORMAL"
 
-# 수직 FOV (도). 올바른 원근 화각 기준:
-#   사람 눈 ≈ 모니터 시청 거리 의존 (~28-32°) — 직선 왜곡 없는 "창문" 투영
-#   50mm 사진 렌즈 환경 ~27° (16:9), 일반 게임 60-75°
-# 기본값 50°: 게임 감각과 현실 사이 절충점
-const FOV_DEFAULT: float = 50.0
-const FOV_MIN: float     = 10.0   # 10° = 강한 망원 (태양/달 착시 극대화)
-const FOV_MAX: float     = 90.0   # 90° = 광각
+const FOV_EYE: float    = 50.0   # 사람눈 모드 기본 수직 화각
+const FOV_CAMERA: float = 70.0   # 카메라 모드 기본 수직 화각
+const FOV_MIN: float    = 10.0
+const FOV_MAX: float    = 90.0
 
-var _fov: float = FOV_DEFAULT
+var eye_view: bool  = true
+var _fov: float     = FOV_EYE
 
 var _cam: Camera3D
 var _yaw: float   = 0.0
@@ -27,6 +25,15 @@ func build() -> void:
 	_cam = Camera3D.new()
 	_cam.fov = _fov
 	_cam.current = true
+	var attrs := CameraAttributesPractical.new()
+	attrs.dof_blur_far_enabled     = true
+	attrs.dof_blur_far_distance    = 40.0
+	attrs.dof_blur_far_transition  = 40.0
+	attrs.dof_blur_near_enabled    = true
+	attrs.dof_blur_near_distance   = 1.0
+	attrs.dof_blur_near_transition = 0.5
+	attrs.dof_blur_amount          = 0.05
+	_cam.attributes = attrs
 	add_child(_cam)
 	_cam.position = Vector3(8, EYE_HEIGHT, 16)
 	_cam.look_at_from_position(_cam.position, Vector3(0, 1.5, 0), Vector3.UP)
@@ -77,8 +84,7 @@ func _input(event: InputEvent) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		return
 	if event is InputEventKey and event.pressed and event.keycode == KEY_F:
-		# F 키: 화각 기본값(50°) 리셋
-		_fov = FOV_DEFAULT
+		_fov = FOV_EYE if eye_view else FOV_CAMERA
 		_cam.fov = _fov
 		return
 	if event is InputEventMouseMotion and _mouse_look:
@@ -99,6 +105,14 @@ func _input(event: InputEvent) -> void:
 			if _mouse_look:
 				_move_speed = clampf(_move_speed / 1.2, 0.5, 200.0)
 			else:
-				# 일반 모드 스크롤: 줌아웃 (FOV 증가)
 				_fov = clampf(_fov + 3.0, FOV_MIN, FOV_MAX)
 				_cam.fov = _fov
+
+func set_eye_view(enabled: bool) -> void:
+	eye_view = enabled
+	_fov = FOV_EYE if enabled else FOV_CAMERA
+	_cam.fov = _fov
+	var attrs := _cam.attributes as CameraAttributesPractical
+	if attrs:
+		attrs.dof_blur_far_enabled  = enabled
+		attrs.dof_blur_near_enabled = enabled
