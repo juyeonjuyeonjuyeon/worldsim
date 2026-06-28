@@ -50,6 +50,12 @@ var day_length_sec: float = 120.0
 var elapsed_play_seconds: float = 0.0
 var sim_temperature: float = 15.0
 var use_fahrenheit: bool   = false
+var auto_weather: bool     = false
+
+var _auto_wx_sim_timer: float    = 0.0
+var _auto_rain_target: float     = 0.0
+var _auto_overcast_target: float = 0.6
+var _auto_wx_rng := RandomNumberGenerator.new()
 
 # ── 모듈 참조 ──
 var _sky        = null
@@ -79,6 +85,7 @@ func _ready() -> void:
 	ThemeDB.fallback_font         = sys_font
 
 	randomize()
+	_auto_wx_rng.randomize()
 
 	_sky = _SkyCls.new()
 	add_child(_sky)
@@ -142,6 +149,7 @@ func _ui_init_dict() -> Dictionary:
 		"show_constellations":   show_constellations,
 		"eye_view":              _camera.eye_view,
 		"use_fahrenheit":        use_fahrenheit,
+		"auto_weather":          auto_weather,
 	}
 
 func _on_settings_confirmed(s: Dictionary) -> void:
@@ -170,6 +178,10 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	snow_size_scale      = s.get("snow_size_scale",      snow_size_scale)
 	show_constellations  = s.get("show_constellations",  show_constellations)
 	use_fahrenheit       = s.get("use_fahrenheit",       use_fahrenheit)
+	var prev_auto: bool  = auto_weather
+	auto_weather         = s.get("auto_weather",         auto_weather)
+	if auto_weather and not prev_auto:
+		_auto_wx_sim_timer = 0.0  # 즉시 첫 날씨 결정
 	if need_rebuild:
 		_ui.build(_ui_init_dict())
 	_update_all(0.0)
@@ -221,6 +233,8 @@ func _update_all(delta: float) -> void:
 	var cloud_props: Dictionary = _weather_cloud_props()
 
 	sim_temperature = _estimate_temperature(dt["month"], fmod(dt["hour"], 24.0), latitude)
+	if auto_weather:
+		_update_auto_weather(delta)
 	_sky.show_constellations = show_constellations
 	_sky.update(
 		sun_altaz, moon, cloud_props,
@@ -304,6 +318,43 @@ static func _estimate_temperature(month: int, hour_local: float, latitude: float
 	# 일교차 ±6°C (오후 2시 최고, 새벽 최저)
 	var day_offset: float    = -6.0 * cos((hour_local - 14.0) * PI / 12.0)
 	return monthly_base + day_offset
+
+func _update_auto_weather(delta: float) -> void:
+	var sim_speed: float = 86400.0 / maxf(day_length_sec, 1.0)
+	_auto_wx_sim_timer -= delta * sim_speed
+	if _auto_wx_sim_timer <= 0.0:
+		_roll_auto_weather()
+	rain_rate          = move_toward(rain_rate,          _auto_rain_target,     delta * 3.0)
+	overcast_intensity = move_toward(overcast_intensity, _auto_overcast_target, delta * 0.12)
+
+func _roll_auto_weather() -> void:
+	var params: Dictionary = WorldSimWeather.get_params(latitude, sim_month)
+	# 다음 날씨 지속: 1-4 시뮬레이션 일 (= 86400 sim초/일)
+	_auto_wx_sim_timer = _auto_wx_rng.randf_range(86400.0, 86400.0 * 4.0)
+
+	if _auto_wx_rng.randf() < float(params["precip_prob"]):
+		# 강수 결정 — 눈/비 판정: 기후 경향 + 온도 보정
+		var sb: float = float(params["snow_bias"])
+		if sim_temperature < 0.0:
+			sb = clampf(sb + 0.35, 0.0, 0.97)
+		elif sim_temperature > 4.0:
+			sb = maxf(0.0, sb - 0.25)
+		weather_type = "SNOW" if _auto_wx_rng.randf() < sb else "RAIN"
+		var rate: float = float(params["rain_rate_mean"]) * _auto_wx_rng.randf_range(0.4, 2.5)
+		_auto_rain_target = clampf(rate, 0.5, 55.0)
+	else:
+		_auto_rain_target = 0.0
+		var cb: float  = float(params["cloud_cover"])
+		var cr: float  = _auto_wx_rng.randf()
+		if cr < cb * 0.28:
+			weather_type          = "OVERCAST"
+			_auto_overcast_target = _auto_wx_rng.randf_range(0.30, 0.88)
+		elif cr < cb * 0.62:
+			weather_type = "CUMULUS"
+		elif cr < cb:
+			weather_type = "CIRRUS"
+		else:
+			weather_type = "CLEAR"
 
 static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 	if x <= xs[0]:

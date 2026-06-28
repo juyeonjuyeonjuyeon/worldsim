@@ -39,6 +39,9 @@ var _cur_year: int    = 2026
 var _utc_sl: HSlider  = null
 var _utc_lbl: Label   = null
 
+# 자동 날씨 모드에서 비활성화할 컨트롤 목록
+var _auto_wx_controls: Array = []
+
 # ── 저장 / 복원 ──────────────────────────────────────────────────────
 func load_state(window: Window) -> void:
 	var cfg := ConfigFile.new()
@@ -333,6 +336,7 @@ func _build_all(init: Dictionary) -> void:
 		"snow_size_scale":     init.get("snow_size_scale",     1.0),
 		"show_constellations": init.get("show_constellations", false),
 		"use_fahrenheit":      init.get("use_fahrenheit",      false),
+		"auto_weather":        init.get("auto_weather",        false),
 	}
 
 	var check_h: int = maxi(24, int(fs_ctrl * 1.6))
@@ -341,6 +345,16 @@ func _build_all(init: Dictionary) -> void:
 	# 탭 1: 날씨
 	# ═════════════════════════════════════════════════════════
 	var vb_w := _make_tab(tab, "날씨")
+
+	# 자동 날씨 토글
+	var is_auto: bool = init.get("auto_weather", false)
+	var auto_wx_check := CheckBox.new()
+	auto_wx_check.text           = "자동 날씨 (위도·날짜 기반)"
+	auto_wx_check.button_pressed = is_auto
+	auto_wx_check.add_theme_font_size_override("font_size", fs_ctrl)
+	auto_wx_check.custom_minimum_size = Vector2(0, check_h)
+	vb_w.add_child(auto_wx_check)
+	vb_w.add_child(HSeparator.new())
 
 	var weather_opt := OptionButton.new()
 	weather_opt.add_theme_font_size_override("font_size", fs_ctrl)
@@ -375,6 +389,19 @@ func _build_all(init: Dictionary) -> void:
 		_apply()
 	)
 	refresh_weather.call()
+
+	# 자동 날씨 모드: 날씨 타입·강수강도·흐림 컨트롤 비활성화
+	_auto_wx_controls = [weather_opt]
+	for row: Control in [rain_row, overcast_row]:
+		for ch in row.get_children():
+			if ch is HSlider:
+				_auto_wx_controls.append(ch as HSlider)
+	_toggle_weather_controls(not is_auto)
+	auto_wx_check.toggled.connect(func(p: bool):
+		_pending["auto_weather"] = p
+		_toggle_weather_controls(not p)
+		_apply()
+	)
 
 	var const_check := CheckBox.new()
 	const_check.text           = "별자리 선 표시"
@@ -726,6 +753,15 @@ func _slider_row(text: String, lo: float, hi: float, val: float, on_change: Call
 	)
 	box.add_child(sl)
 	return box
+
+func _toggle_weather_controls(enabled: bool) -> void:
+	for ctrl in _auto_wx_controls:
+		if ctrl is OptionButton:
+			(ctrl as OptionButton).disabled = not enabled
+		elif ctrl is HSlider:
+			(ctrl as HSlider).editable = enabled
+		if ctrl is Control:
+			(ctrl as Control).modulate.a = 1.0 if enabled else 0.45
 
 static func _speed_text(day_sec: float) -> String:
 	if day_sec >= 86000.0:
