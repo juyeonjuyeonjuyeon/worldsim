@@ -655,6 +655,7 @@ func update(
 	rain_streak_scale: float,
 	snow_size_scale: float,
 	temperature: float,
+	hour_local: float,
 	delta: float
 ) -> void:
 	var is_rain: bool = weather_type == "RAIN"
@@ -768,17 +769,34 @@ func update(
 	elif ground_snow < 0.05:
 		snow_age = maxf(0.0, snow_age - delta / 180.0)
 
-	# 상대습도 추정 — 날씨 타입·적설·기온 기반
-	if is_rain:
-		humidity = clampf(82.0 + rain_frac * 14.0, 82.0, 98.0)
-	elif is_snow:
-		humidity = clampf(78.0 + snow_frac * 12.0, 78.0, 95.0)
-	elif sky_overcast > 0.7:
-		humidity = clampf(50.0 + sky_overcast * 30.0, 50.0, 78.0)
-	elif sky_overcast > 0.2:
-		humidity = 30.0 + sky_overcast * 25.0
+	# 상대습도 — 위도별 기준값 + 날씨·지면수분·일변화 복합 모델
+	var abs_lat_h: float = abs(latitude)
+	# 위도별 맑은 날 기준 습도: 열대75→사막(22°)20→온대48→냉대60→극72
+	var clear_base: float
+	if abs_lat_h <= 22.0:
+		clear_base = lerp(75.0, 20.0, abs_lat_h / 22.0)
+	elif abs_lat_h <= 35.0:
+		clear_base = lerp(20.0, 48.0, (abs_lat_h - 22.0) / 13.0)
+	elif abs_lat_h <= 65.0:
+		clear_base = lerp(48.0, 60.0, (abs_lat_h - 35.0) / 30.0)
 	else:
-		humidity = clampf(28.0 - temperature * 0.35, 10.0, 45.0)
+		clear_base = lerp(60.0, 72.0, (abs_lat_h - 65.0) / 25.0)
+	# 일변화: 새벽 5시 최고, 오후 15시 최저 (±8%)
+	var diurnal_hum: float = -8.0 * sin((hour_local - 5.0) * PI / 12.0)
+	# 지면 수분 기여: 비 온 후 증발로 습도 유지
+	var wet_contrib: float = ground_wetness * 20.0
+	var hum_target: float
+	if is_rain:
+		hum_target = clampf(82.0 + rain_frac * 14.0, 82.0, 98.0)
+	elif is_snow:
+		hum_target = clampf(78.0 + snow_frac * 12.0, 78.0, 95.0)
+	elif sky_overcast > 0.7:
+		hum_target = clampf(clear_base + 25.0 + wet_contrib - temperature * 0.15 + diurnal_hum * 0.5, 50.0, 88.0)
+	elif sky_overcast > 0.2:
+		hum_target = clampf(clear_base + sky_overcast * 18.0 + wet_contrib - temperature * 0.2 + diurnal_hum, 25.0, 80.0)
+	else:
+		hum_target = clampf(clear_base + wet_contrib - temperature * 0.3 + diurnal_hum, 10.0, 80.0)
+	humidity = move_toward(humidity, hum_target, delta * 3.0)
 
 	# 서리/결빙 — 영하 2°C 이하일 때 서서히 생성, 0°C 이상·비·눈에 녹음
 	if temperature < -2.0 and not is_rain:

@@ -232,9 +232,9 @@ func _update_all(delta: float) -> void:
 	var moon: Dictionary = Astronomy.moon_state(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
 	var cloud_props: Dictionary = _weather_cloud_props()
 
-	sim_temperature = _estimate_temperature(dt["month"], fmod(dt["hour"], 24.0), latitude)
+	sim_temperature = _estimate_temperature(dt["month"], int(dt["day"]), fmod(dt["hour"], 24.0), latitude, weather_type)
 	if auto_weather:
-		_update_auto_weather(delta)
+		_update_auto_weather(delta, dt["month"])
 	_sky.show_constellations = show_constellations
 	_sky.update(
 		sun_altaz, moon, cloud_props,
@@ -249,7 +249,7 @@ func _update_all(delta: float) -> void:
 		cloud_props, sim_month, latitude,
 		_sky.sky_brightness_safe, _sky.sky_overcast_amt_current,
 		rain_streak_scale, snow_size_scale,
-		sim_temperature, delta)
+		sim_temperature, fmod(dt["hour"], 24.0), delta)
 
 	_sound.update(weather_type, wind_enabled, wind_speed, rain_rate, delta)
 
@@ -298,37 +298,56 @@ func _current_datetime() -> Dictionary:
 		return {"year": d["year"], "month": d["month"], "day": d["day"], "hour": hour}
 	return {"year": sim_year, "month": sim_month, "day": sim_day, "hour": time_of_day}
 
-static func _estimate_temperature(month: int, hour_local: float, latitude: float) -> float:
+static func _estimate_temperature(month: int, day: int, hour_local: float, latitude: float, p_weather: String) -> float:
 	# 위도별 기후 근사 — 해양·대륙 혼합 단순 모델
 	# 위도별 연 평균 기온: 0°=26°C, 25°=22°C, 45°=11°C, 65°=0°C, 90°=-20°C
-	const LAT_P:  Array = [0.0, 25.0, 45.0, 65.0, 90.0]
-	const MEAN_P: Array = [26.0, 22.0, 11.0, 0.0, -20.0]
+	const LAT_P:     Array = [0.0, 25.0, 45.0, 65.0, 90.0]
+	const MEAN_P:    Array = [26.0, 22.0, 11.0, 0.0, -20.0]
 	# 위도별 계절 진폭 (연 최고·최저 절반폭): 적도≈1°C, 중위도≈10°C, 극지≈12°C
-	const AMP_P:  Array = [1.0, 5.0, 10.0, 14.0, 12.0]
-	var abs_lat: float       = abs(latitude)
-	var annual_mean: float   = _lerp_breakpoints(abs_lat, LAT_P, MEAN_P)
-	var seasonal_amp: float  = _lerp_breakpoints(abs_lat, LAT_P, AMP_P)
-	# 남반구: 1월↔7월 등 계절 6개월 반전
-	var eff_month: float = float(month)
+	const AMP_P:     Array = [1.0, 5.0, 10.0, 14.0, 12.0]
+	# 위도별 일교차 진폭: 열대≈4°C, 아열대≈7°C, 온대≈9°C, 한대≈8°C, 극≈4°C
+	const DIURNAL_P: Array = [4.0, 7.0, 9.0, 8.0, 4.0]
+	var abs_lat: float      = abs(latitude)
+	var annual_mean: float  = _lerp_breakpoints(abs_lat, LAT_P, MEAN_P)
+	var seasonal_amp: float = _lerp_breakpoints(abs_lat, LAT_P, AMP_P)
+	var diurnal_amp: float  = _lerp_breakpoints(abs_lat, LAT_P, DIURNAL_P)
+	# 날짜 연속 월 — 월 경계를 매끄럽게 보간 (1일=month, 말일≈month+1)
+	var month_f: float = float(month) + float(day - 1) / 30.0
+	# 남반구: 6개월 계절 반전
 	if latitude < 0.0:
-		eff_month = fmod(float(month - 1 + 6), 12.0) + 1.0
-	# 최고 기온 8월, 최저 2월 기준 코사인 (북반구 기준, 남반구는 위에서 반전됨)
-	var phase: float         = cos((eff_month - 8.0) * 2.0 * PI / 12.0)
-	var monthly_base: float  = annual_mean + seasonal_amp * phase
-	# 일교차 ±6°C (오후 2시 최고, 새벽 최저)
-	var day_offset: float    = -6.0 * cos((hour_local - 14.0) * PI / 12.0)
-	return monthly_base + day_offset
+		month_f = fmod(month_f - 1.0 + 6.0, 12.0) + 1.0
+	# 최고 기온 8월, 최저 2월 기준 코사인 (북반구 기준)
+	var phase: float        = cos((month_f - 8.0) * 2.0 * PI / 12.0)
+	var monthly_base: float = annual_mean + seasonal_amp * phase
+	# 날씨별 온도 보정: 비=증발냉각, 눈·흐림=약간 냉각; 구름은 일교차도 줄임
+	var weather_offset: float = 0.0
+	var diurnal_scale:  float = 1.0
+	match p_weather:
+		"RAIN":
+			weather_offset = -2.5
+			diurnal_scale  = 0.45
+		"SNOW":
+			weather_offset = -1.0
+			diurnal_scale  = 0.50
+		"OVERCAST":
+			weather_offset = -0.5
+			diurnal_scale  = 0.60
+		"CUMULUS":
+			diurnal_scale  = 0.85
+	# 일교차: 오후 2시 최고, 새벽 최저 (위도별 진폭, 날씨에 따라 축소)
+	var day_offset: float = -diurnal_amp * diurnal_scale * cos((hour_local - 14.0) * PI / 12.0)
+	return monthly_base + day_offset + weather_offset
 
-func _update_auto_weather(delta: float) -> void:
+func _update_auto_weather(delta: float, cur_month: int) -> void:
 	var sim_speed: float = 86400.0 / maxf(day_length_sec, 1.0)
 	_auto_wx_sim_timer -= delta * sim_speed
 	if _auto_wx_sim_timer <= 0.0:
-		_roll_auto_weather()
+		_roll_auto_weather(cur_month)
 	rain_rate          = move_toward(rain_rate,          _auto_rain_target,     delta * 3.0)
 	overcast_intensity = move_toward(overcast_intensity, _auto_overcast_target, delta * 0.12)
 
-func _roll_auto_weather() -> void:
-	var params: Dictionary = WorldSimWeather.get_params(latitude, sim_month)
+func _roll_auto_weather(cur_month: int) -> void:
+	var params: Dictionary = WorldSimWeather.get_params(latitude, cur_month)
 	# 다음 날씨 지속: 1-4 시뮬레이션 일 (= 86400 sim초/일)
 	_auto_wx_sim_timer = _auto_wx_rng.randf_range(86400.0, 86400.0 * 4.0)
 
