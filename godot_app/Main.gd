@@ -49,6 +49,7 @@ var real_time_mode: bool = false
 var day_length_sec: float = 120.0
 var elapsed_play_seconds: float = 0.0
 var sim_temperature: float = 15.0
+var use_fahrenheit: bool   = false
 
 # ── 모듈 참조 ──
 var _sky        = null
@@ -140,6 +141,7 @@ func _ui_init_dict() -> Dictionary:
 		"snow_size_scale":       snow_size_scale,
 		"show_constellations":   show_constellations,
 		"eye_view":              _camera.eye_view,
+		"use_fahrenheit":        use_fahrenheit,
 	}
 
 func _on_settings_confirmed(s: Dictionary) -> void:
@@ -167,6 +169,7 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	rain_streak_scale    = s.get("rain_streak_scale",    rain_streak_scale)
 	snow_size_scale      = s.get("snow_size_scale",      snow_size_scale)
 	show_constellations  = s.get("show_constellations",  show_constellations)
+	use_fahrenheit       = s.get("use_fahrenheit",       use_fahrenheit)
 	if need_rebuild:
 		_ui.build(_ui_init_dict())
 	_update_all(0.0)
@@ -242,9 +245,12 @@ func _update_all(delta: float) -> void:
 		var lat_str: String = "%.2f°%s" % [abs(latitude), "N" if latitude >= 0.0 else "S"]
 		var lng_str: String = "%.2f°%s" % [abs(longitude), "E" if longitude >= 0.0 else "W"]
 		var pause_tag: String = "  ⏸" if _paused else ""
-		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s  |  %+.1f°C%s" % [
+		var temp_disp: String = ("%.1f°F" % (sim_temperature * 9.0 / 5.0 + 32.0)) if use_fahrenheit \
+			else ("%.1f°C" % sim_temperature)
+		var hum_str: String = "습도 %.0f%%" % _env.humidity
+		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s  |  %s  %s%s" % [
 			dt["year"], dt["month"], dt["day"], h, m, lat_str, lng_str,
-			sim_temperature, pause_tag])
+			temp_disp, hum_str, pause_tag])
 
 # ── 날씨 → 구름 물리 파라미터 ───────────────────────────────────────
 func _weather_cloud_props() -> Dictionary:

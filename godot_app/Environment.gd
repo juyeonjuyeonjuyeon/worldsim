@@ -10,6 +10,8 @@ var water_depth: float    = 0.0   # 실제 수위 (미터, 무제한)
 var ground_frost: float   = 0.0   # 서리/결빙 진행도 0-1
 var slush_factor: float   = 0.0   # 눈 위 비로 인한 슬러시 0-1
 var snow_type: String     = "WET" # WET(함박눈)/POWDER(가루눈)/GRAUPEL(싸락눈)/BLIZZARD(눈보라)
+var snow_age: float       = 0.0   # 0=신선한 가루눈, 1=오래된 얼음
+var humidity: float       = 50.0  # 상대습도 0-100%
 
 var _ground_mesh: MeshInstance3D
 var _ground_mat: ShaderMaterial
@@ -39,6 +41,7 @@ var _water_shader: Shader
 var _puddle_shader: Shader
 var _rain_shader_mat: ShaderMaterial
 var _tree_splash_emitters: Array = []
+var _snow_dump_timer: float = 0.0
 
 # ── 빌드 ─────────────────────────────────────────────────────────────
 func build() -> void:
@@ -121,9 +124,8 @@ func _build_snow_accumulation() -> void:
 	var snow_shader := Shader.new()
 	snow_shader.code = """
 shader_type spatial;
-uniform vec4 albedo : source_color = vec4(0.92, 0.94, 0.97, 1.0);
-uniform float roughness : hint_range(0.0, 1.0) = 0.9;
 uniform float snow_depth : hint_range(0.0, 0.5) = 0.0;
+uniform float snow_age   : hint_range(0.0, 1.0) = 0.0;
 
 float terrain_h(vec2 xz) {
 	return
@@ -143,16 +145,22 @@ void vertex() {
 }
 
 void fragment() {
-	ALBEDO    = albedo.rgb;
-	ROUGHNESS = roughness;
-	SPECULAR  = 0.04;
+	// 신선한 눈(0) → 압축된 오래된 눈(0.5) → 얼음 껍질(1.0)
+	vec3 fresh_c = vec3(0.93, 0.95, 0.98);  // 갓 내린 눈: 밝은 흰색
+	vec3 aged_c  = vec3(0.80, 0.87, 0.93);  // 오래된 눈: 약간 회청색
+	vec3 ice_c   = vec3(0.62, 0.72, 0.87);  // 얼음: 투명한 청색
+	float t1 = smoothstep(0.0, 0.5, snow_age);
+	float t2 = smoothstep(0.5, 1.0, snow_age);
+	ALBEDO    = mix(fresh_c, mix(aged_c, ice_c, t2), t1);
+	ROUGHNESS = mix(0.92, mix(0.50, 0.12, t2), t1);
+	METALLIC  = snow_age * snow_age * 0.06;
+	SPECULAR  = mix(0.04, 0.90, snow_age * snow_age * 0.85);
 }
 """
 	var mat := ShaderMaterial.new()
 	mat.shader = snow_shader
-	mat.set_shader_parameter("albedo", Color(0.92, 0.94, 0.97))
-	mat.set_shader_parameter("roughness", 0.9)
 	mat.set_shader_parameter("snow_depth", 0.0)
+	mat.set_shader_parameter("snow_age",   0.0)
 	_snow_ground_mesh.material_override = mat
 	_snow_ground_mesh.visible = false
 	add_child(_snow_ground_mesh)
@@ -750,6 +758,28 @@ func update(
 		ground_snow    = clampf(ground_snow - delta * snow_melt, 0.0, 1.0)
 		slush_factor   = clampf(slush_factor - delta / 300.0, 0.0, 1.0)
 
+	# 눈 노화 — 신선한 가루눈(0) → 압축된 눈(0.5) → 얼음 껍질(1.0)
+	# 내리는 중: 신선해짐 / 영하에서 방치: 서서히 얼음화 / 거의 녹으면 초기화
+	if is_snow:
+		snow_age = clampf(snow_age - delta / 480.0, 0.0, 1.0)
+	elif ground_snow > 0.08 and temperature <= 0.0:
+		var age_rate: float = clampf((-temperature * 0.05 + 0.03), 0.01, 0.12) / 3600.0
+		snow_age = clampf(snow_age + delta * age_rate * 6.0, 0.0, 1.0)
+	elif ground_snow < 0.05:
+		snow_age = maxf(0.0, snow_age - delta / 180.0)
+
+	# 상대습도 추정 — 날씨 타입·적설·기온 기반
+	if is_rain:
+		humidity = clampf(82.0 + rain_frac * 14.0, 82.0, 98.0)
+	elif is_snow:
+		humidity = clampf(78.0 + snow_frac * 12.0, 78.0, 95.0)
+	elif sky_overcast > 0.7:
+		humidity = clampf(50.0 + sky_overcast * 30.0, 50.0, 78.0)
+	elif sky_overcast > 0.2:
+		humidity = 30.0 + sky_overcast * 25.0
+	else:
+		humidity = clampf(28.0 - temperature * 0.35, 10.0, 45.0)
+
 	# 서리/결빙 — 영하 2°C 이하일 때 서서히 생성, 0°C 이상·비·눈에 녹음
 	if temperature < -2.0 and not is_rain:
 		var frost_rate: float = clampf((-temperature - 2.0) / 8.0, 0.05, 1.0) / 1800.0
@@ -798,17 +828,40 @@ func update(
 		tm.albedo_color = trunk_dry.darkened(wet * 0.45)
 		tm.roughness    = lerp(0.9, 0.30, wet * 0.8)
 
-	# 나뭇잎 눈 캡
+	# 나뭇잎 눈 캡 — 적설량에 따라 크기, 노화에 따라 색/광택 변화
+	var fresh_cap_c := Color(0.93, 0.95, 0.98)
+	var aged_cap_c  := Color(0.80, 0.87, 0.93)
+	var ice_cap_c   := Color(0.62, 0.72, 0.87)
+	var cap_t1: float = clampf(snow_age * 2.0, 0.0, 1.0)
+	var cap_t2: float = clampf(snow_age * 2.0 - 1.0, 0.0, 1.0)
 	for cap in _leaf_snow_caps:
-		cap.visible = ground_snow > 0.02
-		if cap.visible:
-			cap.scale.y = clampf(ground_snow, 0.05, 1.0)
+		var cap_mi := cap as MeshInstance3D
+		cap_mi.visible = ground_snow > 0.02
+		if cap_mi.visible:
+			cap_mi.scale.y = clampf(ground_snow, 0.05, 1.0)
+			var cm := cap_mi.material_override as StandardMaterial3D
+			if cm:
+				cm.albedo_color = fresh_cap_c.lerp(aged_cap_c.lerp(ice_cap_c, cap_t2), cap_t1)
+				cm.roughness    = lerp(0.90, lerp(0.50, 0.12, cap_t2), cap_t1)
 
-	# 눈더미 메쉬 — 지형 굴곡을 따라가며 두께만 변화
+	# 오래 쌓인 눈이 나뭇가지에서 떨어지는 이벤트
+	if is_snow and ground_snow > 0.45:
+		_snow_dump_timer += delta
+		if _snow_dump_timer >= 25.0:
+			_snow_dump_timer = 0.0
+			for cap in _leaf_snow_caps:
+				if randf() < 0.28:
+					(cap as MeshInstance3D).scale.y = 0.02
+	elif not is_snow:
+		_snow_dump_timer = 0.0
+
+	# 눈더미 메쉬 — 지형 굴곡을 따라가며 두께 및 노화 상태 반영
 	_snow_ground_mesh.visible = ground_snow > 0.04
 	if _snow_ground_mesh.visible:
 		var snow_depth: float = clampf((ground_snow - 0.04) / 0.96, 0.0, 1.0) * 0.35
-		(_snow_ground_mesh.material_override as ShaderMaterial).set_shader_parameter("snow_depth", snow_depth)
+		var ssmat := _snow_ground_mesh.material_override as ShaderMaterial
+		ssmat.set_shader_parameter("snow_depth", snow_depth)
+		ssmat.set_shader_parameter("snow_age",   snow_age)
 
 	# 수위 누적 — 지구 물리: 50mm/hr 폭우 30분 → 1m, 배수 2시간/m
 	if is_rain:

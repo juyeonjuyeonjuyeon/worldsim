@@ -234,6 +234,55 @@ func _build_all(init: Dictionary) -> void:
 	ui_theme.set_font_size("font_size", "OptionButton", fs_ctrl)
 	ui_theme.set_font_size("font_size", "CheckBox",     fs_ctrl)
 	ui_theme.set_font_size("font_size", "TabContainer", fs_ctrl)
+
+	# 슬라이더: 채워진 영역 파란색 강조 + 트랙 두께
+	var sl_fill := StyleBoxFlat.new()
+	sl_fill.bg_color = Color(0.22, 0.50, 0.90, 0.88)
+	sl_fill.set_corner_radius_all(3)
+	sl_fill.content_margin_top    = 3.0
+	sl_fill.content_margin_bottom = 3.0
+	var sl_bg := StyleBoxFlat.new()
+	sl_bg.bg_color = Color(0.14, 0.15, 0.20, 0.82)
+	sl_bg.set_corner_radius_all(3)
+	sl_bg.content_margin_top    = 3.0
+	sl_bg.content_margin_bottom = 3.0
+	ui_theme.set_stylebox("grabber_area",           "HSlider", sl_fill)
+	ui_theme.set_stylebox("grabber_area_highlight", "HSlider", sl_fill)
+	ui_theme.set_stylebox("slider",                 "HSlider", sl_bg)
+
+	# 버튼: 둥근 모서리 + 테두리
+	var mk_btn := func(bg: Color, border: Color) -> StyleBoxFlat:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = bg
+		sb.set_corner_radius_all(5)
+		sb.border_width_left   = 1; sb.border_width_right  = 1
+		sb.border_width_top    = 1; sb.border_width_bottom = 1
+		sb.border_color = border
+		sb.content_margin_left = 8.0; sb.content_margin_right  = 8.0
+		sb.content_margin_top  = 4.0; sb.content_margin_bottom = 4.0
+		return sb
+	var btn_n := mk_btn.call(Color(0.20, 0.22, 0.28, 0.95), Color(0.35, 0.38, 0.50))
+	var btn_h := mk_btn.call(Color(0.27, 0.30, 0.42, 0.95), Color(0.44, 0.54, 0.82))
+	var btn_p := mk_btn.call(Color(0.18, 0.36, 0.70, 0.95), Color(0.44, 0.54, 0.82))
+	var btn_t := mk_btn.call(Color(0.18, 0.36, 0.70, 0.80), Color(0.44, 0.54, 0.82))
+	for cls in ["Button", "OptionButton"]:
+		ui_theme.set_stylebox("normal",   cls, btn_n)
+		ui_theme.set_stylebox("hover",    cls, btn_h)
+		ui_theme.set_stylebox("pressed",  cls, btn_p)
+		ui_theme.set_stylebox("focus",    cls, btn_h)
+	# 토글 버튼 눌린 상태
+	ui_theme.set_stylebox("pressed",        "Button", btn_p)
+	# 폰트 색
+	for cls in ["Button", "OptionButton"]:
+		ui_theme.set_color("font_color",         cls, Color(0.87, 0.90, 0.96))
+		ui_theme.set_color("font_hover_color",   cls, Color(1.0,  1.0,  1.0))
+		ui_theme.set_color("font_pressed_color", cls, Color(1.0,  1.0,  1.0))
+	ui_theme.set_color("font_color", "CheckBox", Color(0.87, 0.90, 0.96))
+	# 드롭다운 팝업 항목 폰트
+	ui_theme.set_font_size("font_size", "PopupMenu", fs_ctrl)
+	ui_theme.set_color("font_color",       "PopupMenu", Color(0.87, 0.90, 0.96))
+	ui_theme.set_color("font_hover_color", "PopupMenu", Color(1.0, 1.0, 1.0))
+
 	panel.theme = ui_theme
 
 	var inner_w: int = panel_w - int(12 * s)
@@ -284,6 +333,7 @@ func _build_all(init: Dictionary) -> void:
 		"rain_streak_scale":   init.get("rain_streak_scale",   1.0),
 		"snow_size_scale":     init.get("snow_size_scale",     1.0),
 		"show_constellations": init.get("show_constellations", false),
+		"use_fahrenheit":      init.get("use_fahrenheit",      false),
 	}
 
 	var check_h: int = maxi(24, int(fs_ctrl * 1.6))
@@ -551,6 +601,14 @@ func _build_all(init: Dictionary) -> void:
 		abtn.pressed.connect(func(): aspect_requested.emit(ar))
 		aspect_row.add_child(abtn)
 	vb_c.add_child(_labeled("화면비율", aspect_row))
+
+	var fahr_check := CheckBox.new()
+	fahr_check.text           = "온도 단위: 화씨(°F)"
+	fahr_check.button_pressed = init.get("use_fahrenheit", false)
+	fahr_check.add_theme_font_size_override("font_size", fs_ctrl)
+	fahr_check.custom_minimum_size = Vector2(0, check_h)
+	fahr_check.toggled.connect(func(p): _pending["use_fahrenheit"] = p; _apply())
+	vb_c.add_child(fahr_check)
 
 	vb_c.add_child(HSeparator.new())
 
