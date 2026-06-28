@@ -52,9 +52,11 @@ var sim_temperature: float = 15.0
 var use_fahrenheit: bool   = false
 var auto_weather: bool     = false
 
-var _auto_wx_sim_timer: float    = 0.0
-var _auto_rain_target: float     = 0.0
-var _auto_overcast_target: float = 0.6
+var _auto_wx_sim_timer: float      = 0.0
+var _auto_rain_target: float       = 0.0
+var _auto_overcast_target: float   = 0.6
+var _auto_wind_speed_target: float = 0.0
+var _auto_wind_dir_target: float   = 0.0
 var _auto_wx_rng := RandomNumberGenerator.new()
 
 # ── 모듈 참조 ──
@@ -345,6 +347,11 @@ func _update_auto_weather(delta: float, cur_month: int) -> void:
 		_roll_auto_weather(cur_month)
 	rain_rate          = move_toward(rain_rate,          _auto_rain_target,     delta * 3.0)
 	overcast_intensity = move_toward(overcast_intensity, _auto_overcast_target, delta * 0.12)
+	# 풍속: 0.8 m/s per second 속도로 변화
+	wind_speed = move_toward(wind_speed, _auto_wind_speed_target, delta * 0.8)
+	# 풍향: 최단 방향으로 초당 20° 회전 (원형 보간)
+	var dir_diff: float = fmod((_auto_wind_dir_target - wind_direction + 540.0), 360.0) - 180.0
+	wind_direction = fmod(wind_direction + clampf(dir_diff, -delta * 20.0, delta * 20.0) + 360.0, 360.0)
 
 func _roll_auto_weather(cur_month: int) -> void:
 	var params: Dictionary = WorldSimWeather.get_params(latitude, cur_month)
@@ -374,6 +381,19 @@ func _roll_auto_weather(cur_month: int) -> void:
 			weather_type = "CIRRUS"
 		else:
 			weather_type = "CLEAR"
+
+	# 날씨 유형별 풍속 범위 (m/s), 풍향은 매 롤마다 랜덤
+	var ws_min: float; var ws_max: float
+	match weather_type:
+		"CLEAR":    ws_min = 0.0; ws_max = 3.0
+		"CIRRUS":   ws_min = 2.0; ws_max = 7.0
+		"CUMULUS":  ws_min = 3.0; ws_max = 9.0
+		"OVERCAST": ws_min = 5.0; ws_max = 13.0
+		"RAIN":     ws_min = 4.0; ws_max = 16.0
+		"SNOW":     ws_min = 1.0; ws_max = 12.0
+		_:          ws_min = 0.0; ws_max = 5.0
+	_auto_wind_speed_target = _auto_wx_rng.randf_range(ws_min, ws_max)
+	_auto_wind_dir_target   = _auto_wx_rng.randf_range(0.0, 360.0)
 
 static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
 	if x <= xs[0]:
