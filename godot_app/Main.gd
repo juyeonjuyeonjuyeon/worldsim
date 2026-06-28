@@ -275,9 +275,10 @@ func _update_all(delta: float) -> void:
 		var temp_disp: String = ("%.1f°F" % (sim_temperature * 9.0 / 5.0 + 32.0)) if use_fahrenheit \
 			else ("%.1f°C" % sim_temperature)
 		var hum_str: String = "습도 %.0f%%" % _env.humidity
-		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s  |  %s  %s%s" % [
+		var evt_str: String = ("  |  " + _sky.planet_events) if _sky.planet_events != "" else ""
+		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s  |  %s  %s%s%s" % [
 			dt["year"], dt["month"], dt["day"], h, m, lat_str, lng_str,
-			temp_disp, hum_str, pause_tag])
+			temp_disp, hum_str, evt_str, pause_tag])
 
 # ── 날씨 → 구름 물리 파라미터 ───────────────────────────────────────
 func _weather_cloud_props() -> Dictionary:

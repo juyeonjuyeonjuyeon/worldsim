@@ -170,6 +170,7 @@ var _zodiac_intensity: float = 0.0
 var _milkyway_mesh: MeshInstance3D
 var _milkyway_mat: ShaderMaterial
 var _milkyway_intensity: float = 0.0
+var planet_events: String = ""       # 행성 합/충 이벤트 (Main.gd에서 읽어 상태 표시)
 var _rain_rate_ema: float = 0.0   # 최근 강수 이력 EMA (τ≈30s) — 무지개 조건용
 var _fog_density_cur: float   = 0.0
 var _bolt_mesh: ImmediateMesh          # 번개 볼트 선분
@@ -466,6 +467,10 @@ void fragment() {
 
 ## 행성 순서(인덱스 고정): 수성0 금성1 화성2 목성3 토성4 천왕성5 해왕성6
 const PLANETS: Array = ["mercury","venus","mars","jupiter","saturn","uranus","neptune"]
+const PLANET_KR: Dictionary = {
+	"mercury": "수성", "venus": "금성", "mars": "화성",
+	"jupiter": "목성", "saturn": "토성", "uranus": "천왕성", "neptune": "해왕성"
+}
 ## 행성별 고유 색 (RGB) — 실제 반사 스펙트럼 기반
 const PLANET_COLORS: Array = [
 	Color(0.88, 0.83, 0.80),   # 수성 — 회백
@@ -848,7 +853,7 @@ func update(
 	_eye_view = eye_view
 	_update_sky_and_lights(sun_altaz, moon, cloud_props, lightning_flash, delta)
 	_update_stars(dt, hour_utc, latitude, longitude, cloud_props)
-	_update_planets(dt, hour_utc, latitude, longitude, cloud_props)
+	_update_planets(sun_altaz, dt, hour_utc, latitude, longitude, cloud_props)
 	_update_constellations(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_bolt(lightning_flash, lightning_bolt_dist_km)
 	_update_meteor(sun_altaz, cloud_props, dt, hour_utc, latitude, longitude, delta)
@@ -1247,44 +1252,85 @@ func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: 
 		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 3.0)
 		mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
 
-func _update_planets(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
-	var sun_elev: float  = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude).x
+func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
+	var sun_elev: float  = sun_altaz.x
 	var cloud_block: float = cloud_props["okta"]
 	var psmat: ShaderMaterial = _planet_mm.material_override as ShaderMaterial
 	# 금성(-4.5등)은 태양 고도 7°까지 육안 관측 가능, 다른 행성은 3° 이하
 	# 금성 특유의 극밝기 때문에 낮에도 보이는 현상 반영
 	var venus_visible: bool = sun_elev <= 7.0
 	var others_visible: bool = sun_elev <= 3.0
-	if not venus_visible and not others_visible:
-		psmat.set_shader_parameter("global_brightness", 0.0)
-		return
-	psmat.set_shader_parameter("global_brightness", 4.0 * max(0.0, 1.0 - cloud_block))
 	var mm := _planet_mm.multimesh
 	var radius: float = 398.0  # 별(400)보다 약간 앞에 — 행성이 별 앞에 겹쳐 그려짐
+	# 모든 행성 상태를 미리 계산 (합/충 감지용)
+	var all_states: Array = []
 	for idx in range(PLANETS.size()):
 		var pname: String = PLANETS[idx]
-		var pc: Color = PLANET_COLORS[idx]
 		var ps: Dictionary = Astronomy.planet_state(pname, dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
-		if ps.is_empty():
+		all_states.append(ps)
+	if not venus_visible and not others_visible:
+		psmat.set_shader_parameter("global_brightness", 0.0)
+		for idx in range(PLANETS.size()):
+			var pc: Color = PLANET_COLORS[idx]
 			mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
 			mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
-			continue
-		var mag: float = ps["mag"]
-		# 금성은 -4.5등 → 최대 태양 고도 7°까지 가시, 다른 행성은 일반 공식
-		var max_sun_elev: float = 7.0 if pname == "venus" else 3.0
-		if sun_elev > max_sun_elev:
-			mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
-			mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
-			continue
-		var appear_elev: float = lerp(-4.0, -14.0, (mag + 1.5) / 6.5)
-		var twilight: float    = clampf((sun_elev - appear_elev - 2.0) / -2.0, 0.0, 1.0)
-		var pogson_b: float    = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
-		mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, pogson_b * twilight))
-		var dir: Vector3   = _altaz_to_dir(ps["alt"], ps["az"])
-		# 행성은 각지름이 거의 0 → 점(point)으로 렌더; 최대 0.80m @ 400m = 0.11°
-		# 달 디스크(0.52°)보다 훨씬 작게 유지
-		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 0.80)
-		mm.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
+	else:
+		psmat.set_shader_parameter("global_brightness", 4.0 * max(0.0, 1.0 - cloud_block))
+		for idx in range(PLANETS.size()):
+			var pname: String = PLANETS[idx]
+			var pc: Color = PLANET_COLORS[idx]
+			var ps: Dictionary = all_states[idx]
+			if ps.is_empty():
+				mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
+				mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
+				continue
+			var mag: float = ps["mag"]
+			# 금성은 -4.5등 → 최대 태양 고도 7°까지 가시, 다른 행성은 일반 공식
+			var max_sun_elev: float = 7.0 if pname == "venus" else 3.0
+			if sun_elev > max_sun_elev:
+				mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
+				mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
+				continue
+			var appear_elev: float = lerp(-4.0, -14.0, (mag + 1.5) / 6.5)
+			var twilight: float    = clampf((sun_elev - appear_elev - 2.0) / -2.0, 0.0, 1.0)
+			var pogson_b: float    = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
+			mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, pogson_b * twilight))
+			var dir: Vector3   = _altaz_to_dir(ps["alt"], ps["az"])
+			# 행성은 각지름이 거의 0 → 점(point)으로 렌더; 최대 0.80m @ 400m = 0.11°
+			# 달 디스크(0.52°)보다 훨씬 작게 유지
+			var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 0.80)
+			mm.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
+	# ── 행성 합/충 감지 ────────────────────────────────────────────────
+	var events: PackedStringArray = []
+	var vis_states: Array = []   # 지평선 위(-10°)에 있는 행성만
+	for idx in range(PLANETS.size()):
+		var ps: Dictionary = all_states[idx]
+		if not ps.is_empty() and (ps["alt"] as float) > -10.0:
+			vis_states.append({"name": PLANETS[idx], "alt": ps["alt"], "az": ps["az"]})
+	# 행성-행성 합 (각거리 < 1.5°)
+	for i in range(vis_states.size()):
+		for j in range(i + 1, vis_states.size()):
+			var pi: Dictionary = vis_states[i]
+			var pj: Dictionary = vis_states[j]
+			var cos_sep: float = (sin(deg_to_rad(pi["alt"])) * sin(deg_to_rad(pj["alt"]))
+				+ cos(deg_to_rad(pi["alt"])) * cos(deg_to_rad(pj["alt"]))
+				  * cos(deg_to_rad(pi["az"] - pj["az"])))
+			var sep: float = rad_to_deg(acos(clampf(cos_sep, -1.0, 1.0)))
+			if sep < 1.5:
+				events.append("%s·%s 합 (%.1f°)" % [PLANET_KR[pi["name"]], PLANET_KR[pj["name"]], sep])
+	# 태양-행성 이각 (충/합)
+	var sun_alt: float = sun_altaz.x
+	var sun_az: float  = sun_altaz.y
+	for pd: Dictionary in vis_states:
+		var cos_el: float = (sin(deg_to_rad(pd["alt"])) * sin(deg_to_rad(sun_alt))
+			+ cos(deg_to_rad(pd["alt"])) * cos(deg_to_rad(sun_alt))
+			  * cos(deg_to_rad((pd["az"] as float) - sun_az)))
+		var elong: float = rad_to_deg(acos(clampf(cos_el, -1.0, 1.0)))
+		if elong > 170.0:
+			events.append("%s 충" % PLANET_KR[pd["name"]])
+		elif elong < 3.0:
+			events.append("%s 합" % PLANET_KR[pd["name"]])
+	planet_events = "  ".join(events)
 
 func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
 	var sun_elev: float  = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude).x
