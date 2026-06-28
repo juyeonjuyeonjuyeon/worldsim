@@ -167,6 +167,9 @@ var _fogbow_intensity: float = 0.0
 var _zodiac_mesh: MeshInstance3D
 var _zodiac_mat: ShaderMaterial
 var _zodiac_intensity: float = 0.0
+var _milkyway_mesh: MeshInstance3D
+var _milkyway_mat: ShaderMaterial
+var _milkyway_intensity: float = 0.0
 var _rain_rate_ema: float = 0.0   # 최근 강수 이력 EMA (τ≈30s) — 무지개 조건용
 var _fog_density_cur: float   = 0.0
 var _bolt_mesh: ImmediateMesh          # 번개 볼트 선분
@@ -778,6 +781,50 @@ void fragment() {
 	_zodiac_mesh.material_override = _zodiac_mat
 	add_child(_zodiac_mesh)
 
+	# 은하수(Milky Way): 은하 적도면을 따라 흐리는 성운·성단 집합 밴드
+	var mw_sphere := SphereMesh.new()
+	mw_sphere.radius = 399.0; mw_sphere.height = 798.0
+	mw_sphere.rings = 64; mw_sphere.radial_segments = 128
+	_milkyway_mesh = MeshInstance3D.new()
+	_milkyway_mesh.mesh = mw_sphere
+	_milkyway_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_milkyway_mesh.visible = false
+	var mw_shader := Shader.new()
+	mw_shader.code = """
+shader_type spatial;
+render_mode blend_add, depth_draw_never, cull_front, unshaded;
+uniform vec3  gal_pole   = vec3(0.0, 1.0, 0.0);   // 은하 북극 방향 (AltAz)
+uniform vec3  gal_center = vec3(0.0, -1.0, 0.0);  // 은하 중심 방향 (AltAz)
+uniform float intensity  : hint_range(0.0, 0.5) = 0.0;
+varying vec3 vert_os;
+void vertex() { vert_os = VERTEX; }
+void fragment() {
+	vec3 vd  = normalize(vert_os);
+	// 은하 위도 (b): 은하 극과의 각도에서 유도. b=0 이 은하 적도.
+	float b  = dot(vd, normalize(gal_pole));
+	float lat_rad = asin(clamp(b, -1.0, 1.0));
+	// 밴드 폭: ±12° (반치폭 8°)
+	float band = exp(-lat_rad * lat_rad / (0.14 * 0.14));
+	// 은하 중심 쪽으로 갈수록 밝아짐
+	float gc = max(0.0, dot(vd, normalize(gal_center)));
+	float boost = 1.0 + gc * 2.5;
+	// 지평선 아래로 갈수록 소멸
+	float above = clamp(vd.y * 3.0 + 0.3, 0.0, 1.0);
+	// 색: 가장자리=청백, 중심부=황백(적화성운 혼합)
+	vec3 col = mix(vec3(0.80, 0.86, 1.00), vec3(1.00, 0.88, 0.70), gc * 0.55);
+	float alpha = band * boost * above * intensity;
+	ALBEDO = col * alpha;
+	ALPHA  = alpha * 0.4;
+}
+"""
+	_milkyway_mat = ShaderMaterial.new()
+	_milkyway_mat.shader = mw_shader
+	_milkyway_mat.set_shader_parameter("gal_pole",   Vector3(0.0, 1.0, 0.0))
+	_milkyway_mat.set_shader_parameter("gal_center", Vector3(0.0, -1.0, 0.0))
+	_milkyway_mat.set_shader_parameter("intensity",  0.0)
+	_milkyway_mesh.material_override = _milkyway_mat
+	add_child(_milkyway_mesh)
+
 # ── 갱신 ─────────────────────────────────────────────────────────────
 func update(
 	sun_altaz: Vector2,
@@ -809,6 +856,7 @@ func update(
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
 	_update_rainbow(sun_altaz, moon, cloud_props, ground_wetness, delta)
 	_update_zodiacal_light(sun_altaz, cloud_props, delta)
+	_update_milkyway(dt, hour_utc, latitude, longitude, cloud_props, delta)
 	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, dt["hour"], delta)
 
 func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
@@ -892,6 +940,30 @@ func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictiona
 	_fogbow_mat.set_shader_parameter("intensity", _fogbow_intensity)
 	_fogbow_mesh.global_position = cam_origin
 	_fogbow_mesh.visible = _fogbow_intensity > 0.001
+
+func _update_milkyway(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary, delta: float) -> void:
+	var sky_cam: Camera3D = get_viewport().get_camera_3d()
+	var cam_origin: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
+	_milkyway_mesh.global_position = cam_origin
+	var sun_elev: float = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude).x
+	var clear_sky: float = exp(-(cloud_props.get("tau", 0.0) as float) / 2.0)
+	var dark_sky: float  = clampf((-sun_elev - 10.0) / 8.0, 0.0, 1.0)
+	var target_mw: float = dark_sky * clear_sky * 0.20
+	var spd_mw := 0.04 if target_mw > _milkyway_intensity else 0.06
+	_milkyway_intensity = lerpf(_milkyway_intensity, target_mw, delta * spd_mw)
+	if _milkyway_intensity > 0.001:
+		# 은하 극/중심 좌표 계산 (J2000 → 현재 세차 → AltAz)
+		var jd: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
+		var gmst: float = Astronomy.gmst_deg(jd)
+		var P: Basis    = Astronomy.precession_matrix(jd)
+		var pole_pr  := Astronomy.precess_radec(192.859, 27.129, P)   # 은하 북극 J2000
+		var center_pr:= Astronomy.precess_radec(266.405, -28.936, P)  # 은하 중심 J2000
+		var pole_az  := Astronomy.radec_to_altaz(pole_pr.x, pole_pr.y, gmst, latitude, longitude)
+		var center_az:= Astronomy.radec_to_altaz(center_pr.x, center_pr.y, gmst, latitude, longitude)
+		_milkyway_mat.set_shader_parameter("gal_pole",   _altaz_to_dir(pole_az.x,   pole_az.y))
+		_milkyway_mat.set_shader_parameter("gal_center", _altaz_to_dir(center_az.x, center_az.y))
+	_milkyway_mat.set_shader_parameter("intensity", _milkyway_intensity)
+	_milkyway_mesh.visible = _milkyway_intensity > 0.001
 
 func _update_zodiacal_light(sun_altaz: Vector2, cloud_props: Dictionary, delta: float) -> void:
 	var sky_cam: Camera3D = get_viewport().get_camera_3d()
