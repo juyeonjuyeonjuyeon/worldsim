@@ -885,40 +885,14 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		0.00085 * moon_sky_factor * scotopic_g,
 		0.00140 * moon_sky_factor * scotopic_b) * 16.0
 
-	# ── 박명 4단계 블렌드 인자 ───────────────────────────────────────────
-	# 시민박명(civil): 0° → −6° (0→1)
-	var civil_t: float  = clampf(-elevation / 6.0, 0.0, 1.0)
-	# 항해박명(nautical): −6° → −12° (0→1)
-	var naut_t: float   = clampf((-elevation - 6.0)  / 6.0, 0.0, 1.0)
-	# 천문박명(astronomical): −12° → −18° (0→1)
-	var astro_t: float  = clampf((-elevation - 12.0) / 6.0, 0.0, 1.0)
-
-	# 상단(zenith) 색 — 표시값 직접 지정 (brt 제거)
-	# 낮(high sun): 맑은 파랑
-	var day_top      := Color(0.35, 0.55, 0.95)
-	# 일몰 직전(warm>0, civil 시작 전): 따뜻한 보라/자주
-	var sunset_top   := Color(0.42, 0.33, 0.58)
-	# 시민박명(civil): 깊은 청자 — 상단은 이미 어두운 파랑
-	var civil_top    := Color(0.18, 0.28, 0.72)
-	# 항해박명(nautical): 더 어두운 파랑
-	var naut_top     := Color(0.06, 0.09, 0.30)
-
-	# 순차 체인: 각 페이즈가 이전 끝점에서 시작 → 중간 합산 오류 없음
-	var top_sunset := day_top.lerp(sunset_top, warm)
-	var top: Color  = top_sunset.lerp(civil_top, civil_t)
-	top = top.lerp(naut_top,  naut_t)
-	top = top.lerp(night_top, astro_t)
-
-	# 지평선 색 — 표시값 직접 지정 (brt 제거)
-	var day_horizon    := Color(0.75, 0.80, 0.90)
-	var sunset_horizon := Color(1.00, 0.52, 0.18)
-	var civil_hor      := Color(0.82, 0.28, 0.12)
-	var naut_hor       := Color(0.16, 0.20, 0.52)
-
-	var hor_sunset := day_horizon.lerp(sunset_horizon, warm)
-	var horizon: Color = hor_sunset.lerp(civil_hor,     civil_t)
-	horizon = horizon.lerp(naut_hor,      naut_t)
-	horizon = horizon.lerp(night_horizon, astro_t)
+	# ── 하늘 색: Preetham(1999) 대기 산란 모델 + 야간 블렌드 ──────────────
+	# Layer A (elevation ≥ −2°): Preetham 분석 모델 — 손으로 색 지정 없음
+	# Layer B (elevation < −6°): 기존 야간 고정 색 유지 (night_top / night_horizon)
+	# 혼합구간 (−2° ∼ −6°): A → B 선형 보간
+	var hw_colors := _preetham_sky_colors(maxf(elevation, 0.0), 3.0)
+	var _dtn_t := clampf((-elevation - 2.0) / 4.0, 0.0, 1.0)
+	var top    : Color = (hw_colors[0] as Color).lerp(night_top,    _dtn_t)
+	var horizon: Color = (hw_colors[1] as Color).lerp(night_horizon, _dtn_t)
 
 	# 날씨 전환 시 tau를 부드럽게 보간 — 점프 없이 흐린날→맑음 or 역방향 전환
 	# lerpf weight ≈ delta×0.3: 60fps에서 τ≈3s, 빠른 전환도 끊김 없이 반영
@@ -1632,3 +1606,74 @@ static func _exposure_for_lux(total_lux: float) -> float:
 			if l1 > l0: f = clampf((log_lux - l0) / (l1 - l0), 0.0, 1.0)
 			return lerp(anchors_ev[i], anchors_ev[i + 1], f)
 	return anchors_ev[anchors_ev.size() - 1]
+
+# ── Preetham(1999) 대기 산란 모델 ─────────────────────────────────────────
+# "A Practical Analytic Model for Daylight", Preetham, Shirley, Smits (1999)
+# sun_elev_deg: 태양 고도각 (0=지평선, 90=천정). 음수는 0으로 클램프 후 호출.
+# turbidity: 대기 혼탁도 T (2=맑음, 10=탁함). 권장 기본값 3.0.
+# 반환: [Color zenith_top, Color horizon] — 선형 광색(HDR, >1 가능), ProceduralSkyMaterial에 직접 설정.
+# 보정 기준: T=3, θ_s=45°(고도45°) 에서 청색 채널 ≈ 0.95 (SCALE=0.05)
+static func _preetham_sky_colors(sun_elev_deg: float, turbidity: float) -> Array:
+	var T  := clampf(turbidity, 2.0, 10.0)
+	var T2 := T * T
+	# 태양 천정각 (0=태양이 바로 위, π/2=지평선)
+	var ts  := deg_to_rad(clampf(90.0 - sun_elev_deg, 0.0, 90.0))
+	var ts2 := ts * ts
+	var ts3 := ts2 * ts
+
+	# 천정 휘도 Yz (kcd/m²)
+	var chi := (4.0/9.0 - T/120.0) * (PI - 2.0*ts)
+	var Yz  := maxf((4.0453*T - 4.9710) * tan(chi) - 0.2155*T + 2.4192, 0.01)
+
+	# 천정 색도 (CIE 1931 x, y)
+	var xz := clampf(
+		T2*(0.00216*ts3 - 0.00375*ts2 + 0.00209*ts)
+		+ T*(-0.02903*ts3 + 0.06377*ts2 - 0.03202*ts + 0.00394)
+		+ (0.11693*ts3 - 0.21196*ts2 + 0.06052*ts + 0.25886), 0.01, 0.8)
+	var yz := clampf(
+		T2*(0.00275*ts3 - 0.00610*ts2 + 0.00317*ts)
+		+ T*(-0.04214*ts3 + 0.08970*ts2 - 0.04153*ts + 0.00516)
+		+ (0.15346*ts3 - 0.26756*ts2 + 0.06670*ts + 0.26688), 0.01, 0.8)
+
+	# Perez 계수 (Y=휘도, _x=색도x, _yy=색도y)
+	var A_Y  :=  0.1787*T - 1.4630; var B_Y  := -0.3554*T + 0.4275
+	var C_Y  := -0.0227*T + 5.3251; var D_Y  :=  0.1206*T - 2.5771; var E_Y  := -0.0670*T + 0.3703
+	var A_x  := -0.0193*T - 0.2592; var B_x  := -0.0665*T + 0.0008
+	var C_x  := -0.0004*T + 0.2125; var D_x  := -0.0641*T - 0.8989; var E_x  := -0.0033*T + 0.0452
+	var A_yy := -0.0167*T - 0.2608; var B_yy := -0.0950*T + 0.0092
+	var C_yy := -0.0079*T + 0.2102; var D_yy := -0.0441*T - 1.6537; var E_yy := -0.0109*T + 0.0529
+
+	# Perez 분포 F(theta, gamma) = (1+A·e^(B/cosθ))·(1+C·e^(D·γ)+E·cos²γ)
+	# 천정 기준값 (θ=0, γ=ts): cos(0)=1, cos(ts)=cos_ts
+	var cos_ts := cos(ts)
+	var f0Y  := (1.0+A_Y *exp(B_Y ))*(1.0+C_Y *exp(D_Y *ts)+E_Y *cos_ts*cos_ts)
+	var f0x  := (1.0+A_x *exp(B_x ))*(1.0+C_x *exp(D_x *ts)+E_x *cos_ts*cos_ts)
+	var f0yy := (1.0+A_yy*exp(B_yy))*(1.0+C_yy*exp(D_yy*ts)+E_yy*cos_ts*cos_ts)
+
+	# 지평선 샘플 (θ=89°, γ = π/2−ts : 태양 방향 기준 지평선)
+	var th_h  := deg_to_rad(89.0)
+	var gm_h  := maxf(0.0, PI * 0.5 - ts)
+	var ct_h  := maxf(cos(th_h), 0.001)
+	var cg_h  := cos(gm_h)
+	var fhY  := (1.0+A_Y *exp(B_Y /ct_h))*(1.0+C_Y *exp(D_Y *gm_h)+E_Y *cg_h*cg_h)
+	var fhx  := (1.0+A_x *exp(B_x /ct_h))*(1.0+C_x *exp(D_x *gm_h)+E_x *cg_h*cg_h)
+	var fhyy := (1.0+A_yy*exp(B_yy/ct_h))*(1.0+C_yy*exp(D_yy*gm_h)+E_yy*cg_h*cg_h)
+
+	# 지평선 xyY
+	var hor_x := clampf(xz * fhx  / maxf(f0x,  0.001), 0.01, 0.8)
+	var hor_y := clampf(yz * fhyy / maxf(f0yy, 0.001), 0.01, 0.8)
+	var hor_Y := Yz * fhY / maxf(f0Y, 0.001)
+
+	# xyY → XYZ → 선형 sRGB. SCALE=0.05: T=3, θ_s=45° 기준 청색채널≈0.95 목표
+	const SCALE := 0.05
+	var _to_rgb := func(cx:float, cy:float, Y:float) -> Color:
+		if cy < 0.001: return Color(0.0, 0.0, 0.0)
+		var X := Y * cx / cy
+		var Z := Y * (1.0 - cx - cy) / cy
+		return Color(
+			maxf( 3.2405*X - 1.5371*Y - 0.4985*Z, 0.0),
+			maxf(-0.9693*X + 1.8760*Y + 0.0416*Z, 0.0),
+			maxf( 0.0556*X - 0.2040*Y + 1.0572*Z, 0.0))
+
+	return [_to_rgb.call(xz,  yz,  Yz  * SCALE),
+	        _to_rgb.call(hor_x, hor_y, hor_Y * SCALE)]
