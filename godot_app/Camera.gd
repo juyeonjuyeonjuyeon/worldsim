@@ -13,6 +13,7 @@ const FOV_MIN: float    = 10.0
 const FOV_MAX: float    = 90.0
 
 var eye_view: bool  = true
+var paused: bool    = false
 var _fov: float     = FOV_EYE
 
 var _cam: Camera3D
@@ -59,6 +60,8 @@ func set_view_mode(mode: String) -> void:
 
 func update(delta: float) -> void:
 	_cam.transform.basis = Basis(Vector3.UP, _yaw) * Basis(Vector3.RIGHT, _pitch)
+	if paused:
+		return
 	var yaw_fwd   := Vector3(-sin(_yaw), 0.0, -cos(_yaw))
 	var yaw_right := Vector3( cos(_yaw), 0.0, -sin(_yaw))
 	var dir := Vector3.ZERO

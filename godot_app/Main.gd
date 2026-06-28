@@ -58,6 +58,7 @@ var _camera     = null
 var _ui         = null
 var _eye_canvas: CanvasLayer = null
 var _eye_rect: ColorRect     = null
+var _paused: bool            = false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -113,6 +114,7 @@ func _ready() -> void:
 	_ui.aspect_requested.connect(_set_aspect)
 	_ui.test_event_requested.connect(_on_test_event)
 	_ui.eye_view_requested.connect(_on_eye_view_requested)
+	_ui.play_state_changed.connect(_on_play_state_changed)
 	_ui.build(_ui_init_dict())
 	_update_all(0.0)
 
@@ -165,7 +167,6 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	rain_streak_scale    = s.get("rain_streak_scale",    rain_streak_scale)
 	snow_size_scale      = s.get("snow_size_scale",      snow_size_scale)
 	show_constellations  = s.get("show_constellations",  show_constellations)
-	_ui.save_state(get_window())
 	if need_rebuild:
 		_ui.build(_ui_init_dict())
 	_update_all(0.0)
@@ -185,6 +186,11 @@ func _on_eye_view_requested(enabled: bool) -> void:
 	if _eye_rect:
 		_eye_rect.visible = enabled
 
+func _on_play_state_changed(playing: bool) -> void:
+	_paused = not playing
+	if _camera:
+		_camera.paused = _paused
+
 func _set_aspect(ratio: String) -> void:
 	var size: Vector2i
 	match ratio:
@@ -197,7 +203,9 @@ func _set_aspect(ratio: String) -> void:
 
 # ── 매 프레임 갱신 ─────────────────────────────────────────────────
 func _process(delta: float) -> void:
-	_update_all(delta)
+	_camera.update(delta)   # 정지 중에도 시점 회전은 허용
+	if not _paused:
+		_update_all(delta)
 
 func _update_all(delta: float) -> void:
 	if real_time_mode:
@@ -227,15 +235,15 @@ func _update_all(delta: float) -> void:
 
 	_sound.update(weather_type, wind_enabled, wind_speed, rain_rate, delta)
 
-	_camera.update(delta)
-
 	if _ui:
 		var h: int = int(dt["hour"])
 		var m: int = int(fmod(dt["hour"], 1.0) * 60)
 		var lat_str: String = "%.2f°%s" % [abs(latitude), "N" if latitude >= 0.0 else "S"]
 		var lng_str: String = "%.2f°%s" % [abs(longitude), "E" if longitude >= 0.0 else "W"]
-		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s" % [
-			dt["year"], dt["month"], dt["day"], h, m, lat_str, lng_str])
+		var pause_tag: String = "  ⏸" if _paused else ""
+		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s  |  %+.1f°C%s" % [
+			dt["year"], dt["month"], dt["day"], h, m, lat_str, lng_str,
+			sim_temperature, pause_tag])
 
 # ── 날씨 → 구름 물리 파라미터 ───────────────────────────────────────
 func _weather_cloud_props() -> Dictionary:
