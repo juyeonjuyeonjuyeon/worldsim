@@ -1086,18 +1086,20 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_moon_mesh.visible = moon_alt > -3.5
 	_moon_shader_mat.set_shader_parameter("horizon_fade", moon_horizon_fade)
 	_moon_shader_mat.set_shader_parameter("sun_dir", sun_dir)
-	# 달 고도에 따른 색: 지평선 근처=오렌지(대기 산란), 상공=청백
-	var moon_warm: float = clampf(1.0 - moon_alt / 18.0, 0.0, 1.0)
-	var moon_lit_c := Vector3(1.0, lerp(0.98, 0.62, moon_warm * 0.65), lerp(0.92, 0.28, moon_warm * 0.65))
+	# 달 대기 적화: Rayleigh 파장별 소광 (물리 기반, 수동 색 제거)
+	# m: 대기 광로 길이(air mass), sin(alt) 역수, 최소 고도 4° 제한
+	var m_moon: float = clampf(1.0 / maxf(sin(deg_to_rad(moon_alt)), 0.07), 1.0, 38.0)
+	var m_ex: float   = m_moon - 1.0  # 천정 대비 추가 광로
+	# Rayleigh 광학 깊이: R=0.028(700nm), G=0.094(550nm), B=0.360(440nm) — 해수면 표준 기압
+	var ray_r: float  = exp(-0.028 * m_ex)
+	var ray_g: float  = exp(-0.094 * m_ex)
+	var ray_b: float  = exp(-0.360 * m_ex)
+	var rnorm: float  = maxf(ray_r, 0.001)  # R채널 기준 정규화 (색도만 제어, 밝기는 조도 모델)
+	# 달 기본 색온도 ≈ 4300K (약간 따뜻한 회백) — 천정 기준
+	var moon_lit_c := Vector3(1.0, 0.98 * ray_g / rnorm, 0.92 * ray_b / rnorm)
 	_moon_shader_mat.set_shader_parameter("lit_color", moon_lit_c)
-	# DirectionalLight 색도 동일 규칙으로 갱신 (build()의 고정값 대체)
-	# 지평선 = 오렌지황(0.95, 0.75, 0.55), 상공 = 청백(0.75, 0.82, 1.00)
-	var moon_hz: float = clampf(1.0 - moon_alt / 15.0, 0.0, 1.0)
-	_moon_light.light_color = Color(
-		lerp(0.75, 0.95, moon_hz),
-		lerp(0.82, 0.75, moon_hz),
-		lerp(1.00, 0.55, moon_hz)
-	)
+	# DirectionalLight: 달빛 색온도 ≈ 4100K (청백), 고도따라 레일리 적화
+	_moon_light.light_color = Color(0.88 * ray_r / rnorm, 0.90 * ray_g / rnorm, ray_b / rnorm)
 
 	_sun_mesh.global_position = cam_origin + sun_dir * 100.0
 	# 태양 지평선 페이드: −3°→+1° smoothstep, 위치 계산은 그대로, 가시성만 조절
