@@ -137,6 +137,7 @@ var cloud_tau_current: float        = 0.0
 var _cloud_tau_smooth: float        = 0.0   # 날씨 전환 때 tau를 부드럽게 보간 (τ≈3s)
 
 var show_constellations: bool = false  # UI 토글로 제어
+var show_trails: bool         = false  # 태양/달 일일 호 표시 토글
 
 var _sun_light: DirectionalLight3D
 var _moon_light: DirectionalLight3D
@@ -154,6 +155,8 @@ var _saturn_ring_inst: MeshInstance3D
 var _saturn_ring_mat: ShaderMaterial
 var _const_mesh: ImmediateMesh         # 별자리 선분
 var _const_mesh_inst: MeshInstance3D
+var _trail_mesh: ImmediateMesh         # 태양/달 일일 호
+var _trail_inst: MeshInstance3D
 var _cloud_mesh: MeshInstance3D
 var _cloud_shader_mat: ShaderMaterial
 var _rainbow_mesh: MeshInstance3D
@@ -222,6 +225,7 @@ func build() -> void:
 	_build_meteor()
 	_build_comet()
 	_build_aurora()
+	_build_trails()
 
 # ── 외부 트리거 (테스트 버튼용) ──────────────────────────────────────
 func trigger_meteor(shower_mode: bool = false) -> void:
@@ -907,6 +911,7 @@ func update(
 	_update_milkyway(dt, hour_utc, latitude, longitude, cloud_props, delta)
 	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, dt["hour"], delta)
 	_update_aurora(sun_altaz, latitude, cloud_props, delta)
+	_update_trails(dt, latitude, longitude)
 
 func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
 	var sky_cam: Camera3D = get_viewport().get_camera_3d()
@@ -2159,3 +2164,70 @@ func _update_aurora(sun_altaz: Vector2, latitude: float, cloud_props: Dictionary
 	_aurora_mat.set_shader_parameter("kp_index",   _aurora_kp)
 	_aurora_mat.set_shader_parameter("intensity",  _aurora_intensity)
 	_aurora_mesh.visible = _aurora_intensity > 0.001
+
+func _build_trails() -> void:
+	_trail_mesh = ImmediateMesh.new()
+	_trail_inst = MeshInstance3D.new()
+	_trail_inst.mesh = _trail_mesh
+	var tmat := StandardMaterial3D.new()
+	tmat.shading_mode         = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tmat.transparency         = BaseMaterial3D.TRANSPARENCY_ALPHA
+	tmat.vertex_color_use_as_albedo = true
+	tmat.no_depth_test        = true
+	_trail_inst.material_override = tmat
+	_trail_inst.cast_shadow   = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_trail_inst.visible       = false
+	add_child(_trail_inst)
+
+func _update_trails(dt: Dictionary, latitude: float, longitude: float) -> void:
+	if not show_trails:
+		_trail_inst.visible = false
+		return
+	_trail_inst.visible = true
+	_trail_mesh.clear_surfaces()
+	_trail_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	const R: float = 392.0     # 별자리(395)보다 안쪽
+	const STEPS: int = 96      # 15분 간격 × 24시간
+	# 태양 일일 호 (오늘 하루, 24시간)
+	var prev_sun_dir: Vector3 = Vector3.ZERO
+	var prev_sun_valid: bool  = false
+	for i in range(STEPS + 1):
+		var h: float  = i * 24.0 / STEPS
+		var az: Vector2 = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], h, latitude, longitude)
+		var sun_d: Vector3 = _altaz_to_dir(az.x, az.y)
+		# 색: 지평선 위=노란색, 아래=어두운 주황/회색
+		var alpha: float = 0.55 if az.x > 0.0 else 0.20
+		var col: Color = Color(1.0, 0.90, 0.30, alpha) if az.x > 0.0 else Color(0.7, 0.5, 0.3, alpha)
+		if prev_sun_valid:
+			_trail_mesh.surface_set_color(col)
+			_trail_mesh.surface_add_vertex(prev_sun_dir * R)
+			_trail_mesh.surface_set_color(col)
+			_trail_mesh.surface_add_vertex(sun_d * R)
+		prev_sun_dir   = sun_d
+		prev_sun_valid = true
+	# 달 7일 호 (과거 3.5일 + 미래 3.5일, 1시간 간격)
+	var jd_now: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], dt["hour"] as float)
+	var prev_moon_dir: Vector3 = Vector3.ZERO
+	var prev_moon_valid: bool  = false
+	for i in range(169):   # -84 ~ +84 시간
+		var jd_i: float = jd_now + (i - 84) / 24.0
+		var t: float   = (jd_i - 2451545.0) / 36525.0
+		var moon_lon: float  = fmod(218.316 + 13.176396 * (jd_i - 2451545.0), 360.0)
+		var moon_lat: float  = 5.1 * sin(deg_to_rad(93.3 + 0.9144 * (jd_i - 2451545.0)))
+		var eps: float       = 23.4393 - 0.0130 * t
+		var ra: float        = atan2(sin(deg_to_rad(moon_lon)) * cos(deg_to_rad(eps)) - tan(deg_to_rad(moon_lat)) * sin(deg_to_rad(eps)), cos(deg_to_rad(moon_lon))) * 180.0 / PI
+		var dec: float       = asin(sin(deg_to_rad(moon_lat)) * cos(deg_to_rad(eps)) + cos(deg_to_rad(moon_lat)) * sin(deg_to_rad(eps)) * sin(deg_to_rad(moon_lon))) * 180.0 / PI
+		var gmst_i: float    = Astronomy.gmst_deg(jd_i)
+		var m_az: Vector2    = Astronomy.radec_to_altaz(ra, dec, gmst_i, latitude, longitude)
+		var moon_d: Vector3  = _altaz_to_dir(m_az.x, m_az.y)
+		var frac: float      = float(i) / 168.0  # 0=과거, 1=현재, 0.5=중간
+		var age_alpha: float = 0.15 + 0.35 * (1.0 - abs(frac - 0.5) * 2.0)  # 현재 근처가 밝음
+		var moon_col: Color  = Color(0.75, 0.80, 0.95, age_alpha)
+		if prev_moon_valid:
+			_trail_mesh.surface_set_color(moon_col)
+			_trail_mesh.surface_add_vertex(prev_moon_dir * (R - 1.0))
+			_trail_mesh.surface_set_color(moon_col)
+			_trail_mesh.surface_add_vertex(moon_d * (R - 1.0))
+		prev_moon_dir   = moon_d
+		prev_moon_valid = true
+	_trail_mesh.surface_end()

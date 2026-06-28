@@ -38,6 +38,7 @@ var wind_direction: float = 0.0   # 나침반 방위각(0=북, 90=동, 180=남, 
 var rain_streak_scale: float  = 1.0
 var snow_size_scale: float    = 1.0
 var show_constellations: bool = false
+var show_trails: bool         = false
 var latitude: float = 37.5665
 var longitude: float = 126.9780
 var utc_offset: float = 9.0
@@ -149,6 +150,7 @@ func _ui_init_dict() -> Dictionary:
 		"rain_streak_scale":     rain_streak_scale,
 		"snow_size_scale":       snow_size_scale,
 		"show_constellations":   show_constellations,
+		"show_trails":           show_trails,
 		"eye_view":              _camera.eye_view,
 		"use_fahrenheit":        use_fahrenheit,
 		"auto_weather":          auto_weather,
@@ -181,6 +183,7 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	rain_streak_scale    = s.get("rain_streak_scale",    rain_streak_scale)
 	snow_size_scale      = s.get("snow_size_scale",      snow_size_scale)
 	show_constellations  = s.get("show_constellations",  show_constellations)
+	show_trails          = s.get("show_trails",          show_trails)
 	use_fahrenheit       = s.get("use_fahrenheit",       use_fahrenheit)
 	var prev_auto: bool  = auto_weather
 	auto_weather         = s.get("auto_weather",         auto_weather)
@@ -245,6 +248,7 @@ func _update_all(delta: float) -> void:
 	if auto_weather:
 		_update_auto_weather(delta, dt["month"])
 	_sky.show_constellations = show_constellations
+	_sky.show_trails         = show_trails
 	_sky.update(
 		sun_altaz, moon, cloud_props,
 		weather_type, wind_speed, wind_direction, wind_enabled,

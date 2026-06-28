@@ -432,6 +432,14 @@ func _build_all(init: Dictionary) -> void:
 	const_check.toggled.connect(func(p): _pending["show_constellations"] = p; _apply())
 	vb_w.add_child(const_check)
 
+	var trail_check := CheckBox.new()
+	trail_check.text           = "태양/달 궤적"
+	trail_check.button_pressed = init.get("show_trails", false)
+	trail_check.add_theme_font_size_override("font_size", fs_ctrl)
+	trail_check.custom_minimum_size = Vector2(0, check_h)
+	trail_check.toggled.connect(func(p): _pending["show_trails"] = p; _apply())
+	vb_w.add_child(trail_check)
+
 	vb_w.add_child(HSeparator.new())
 
 	var wind_check := CheckBox.new()
