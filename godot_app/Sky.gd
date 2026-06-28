@@ -150,6 +150,8 @@ var _world_env: WorldEnvironment
 var _sky_mat: ProceduralSkyMaterial
 var _stars_mm: MultiMeshInstance3D
 var _planet_mm: MultiMeshInstance3D    # 금성·목성 (2 인스턴스)
+var _saturn_ring_inst: MeshInstance3D
+var _saturn_ring_mat: ShaderMaterial
 var _const_mesh: ImmediateMesh         # 별자리 선분
 var _const_mesh_inst: MeshInstance3D
 var _cloud_mesh: MeshInstance3D
@@ -501,6 +503,40 @@ func _build_planets() -> void:
 	psmat.set_shader_parameter("global_brightness", 0.0)
 	_planet_mm.material_override = psmat
 	add_child(_planet_mm)
+	# ── 토성 고리 (flat disc, 3D 방향 정렬) ───────────────────────────
+	# PlaneMesh size=(1,1) → UV r=1 은 중심에서 0.5m. 셰이더에서 r_outer=0.80 → 0.40m
+	# sat_scale 배율 적용 시: outer edge ≈ 2.3× planet radius (실제 Saturn A ring 비율)
+	var ring_plane := PlaneMesh.new()
+	ring_plane.size = Vector2(1.0, 1.0)
+	_saturn_ring_inst = MeshInstance3D.new()
+	_saturn_ring_inst.mesh = ring_plane
+	_saturn_ring_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_saturn_ring_inst.visible = false
+	var ring_shader := Shader.new()
+	ring_shader.code = """
+shader_type spatial;
+render_mode unshaded, blend_add, depth_draw_never, cull_disabled;
+uniform float intensity : hint_range(0.0, 1.0) = 0.0;
+void fragment() {
+\tvec2 uv = UV - vec2(0.5);
+\tfloat r = length(uv) * 2.0;
+\t// C ring inner 0.38, A ring outer 0.80
+\tfloat ring_mask = smoothstep(0.36, 0.41, r) * smoothstep(0.82, 0.77, r);
+\t// Cassini 간극: r ≈ 0.62-0.65
+\tfloat cassini = 1.0 - smoothstep(0.60, 0.62, r) * smoothstep(0.67, 0.65, r) * 0.70;
+\t// B 고리(안쪽)가 A 고리보다 약간 밝음
+\tfloat b_boost = smoothstep(0.63, 0.45, r) * 0.35;
+\tvec3 ring_col = vec3(0.97 + b_boost * 0.03, 0.91 + b_boost * 0.04, 0.72);
+\tfloat alpha = ring_mask * cassini * intensity;
+\tALBEDO = ring_col * alpha;
+\tALPHA  = alpha;
+}
+"""
+	_saturn_ring_mat = ShaderMaterial.new()
+	_saturn_ring_mat.shader = ring_shader
+	_saturn_ring_mat.set_shader_parameter("intensity", 0.0)
+	_saturn_ring_inst.material_override = _saturn_ring_mat
+	add_child(_saturn_ring_inst)
 
 func _build_constellations() -> void:
 	_const_mesh = ImmediateMesh.new()
@@ -1087,7 +1123,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# ── 녹색 섬광 (Green Flash) ─────────────────────────────────────────
 	# 태양이 지평선을 느리게 횡단 + 맑은 하늘 조건에서 1회 점등
 	var _gf_crossing: bool = ((_prev_sun_elev > 0.15 and elevation < 0.15) or
-	                          (_prev_sun_elev < -0.15 and elevation > -0.15))
+							  (_prev_sun_elev < -0.15 and elevation > -0.15))
 	var _gf_clear: bool    = (cloud_props.get("tau", 0.0) as float) < 0.5
 	var _gf_slow: bool     = abs(elevation - _prev_sun_elev) < 0.4  # 수동 점프 제외
 	if _gf_crossing and _gf_clear and _gf_slow:
@@ -1300,6 +1336,35 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 			# 달 디스크(0.52°)보다 훨씬 작게 유지
 			var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 0.80)
 			mm.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
+	# ── 토성 고리 3D 방향 정렬 ───────────────────────────────────────────
+	# PLANETS 배열에서 saturn = index 4
+	var sat_ps: Dictionary = all_states[4]
+	if sat_ps.is_empty() or sun_elev > 3.0 or (sat_ps["alt"] as float) < -5.0:
+		_saturn_ring_mat.set_shader_parameter("intensity", 0.0)
+		_saturn_ring_inst.visible = false
+	else:
+		var sat_dir: Vector3 = _altaz_to_dir(sat_ps["alt"], sat_ps["az"])
+		# 토성 자전 극 (J2000 RA=40.589°, Dec=83.537°) → 현재 에포크 세차 → AltAz
+		var jd_s: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
+		var gst_s: float = Astronomy.gmst_deg(jd_s)
+		var P_s: Basis   = Astronomy.precession_matrix(jd_s)
+		var pp: Vector2  = Astronomy.precess_radec(40.589, 83.537, P_s)
+		var pole_az: Vector2 = Astronomy.radec_to_altaz(pp.x, pp.y, gst_s, latitude, longitude)
+		var pole_dir: Vector3 = _altaz_to_dir(pole_az.x, pole_az.y)
+		# ring disc: normal = pole_dir (고리면의 수직)
+		# PlaneMesh Y축 → pole_dir 방향으로 정렬하는 Basis 생성
+		var y_ax: Vector3 = pole_dir
+		var x_ax: Vector3 = sat_dir.cross(y_ax)
+		if x_ax.length_squared() < 0.0001:
+			x_ax = Vector3(1.0, 0.0, 0.0)
+		x_ax = x_ax.normalized()
+		var z_ax: Vector3 = x_ax.cross(y_ax)
+		var sat_scale: float = clampf(0.45 * pow(10.0, -0.20 * (sat_ps["mag"] as float)), 0.10, 0.80)
+		var ring_basis: Basis = Basis(x_ax, y_ax, z_ax).scaled(Vector3(sat_scale, sat_scale, sat_scale))
+		var ring_alpha: float = clampf(1.0 - cloud_block, 0.0, 1.0) * 0.8
+		_saturn_ring_mat.set_shader_parameter("intensity", ring_alpha)
+		_saturn_ring_inst.global_transform = Transform3D(ring_basis, sat_dir * 396.5)
+		_saturn_ring_inst.visible = true
 	# ── 행성 합/충 감지 ────────────────────────────────────────────────
 	var events: PackedStringArray = []
 	var vis_states: Array = []   # 지평선 위(-10°)에 있는 행성만
