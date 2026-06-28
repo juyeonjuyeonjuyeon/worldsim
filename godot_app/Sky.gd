@@ -202,6 +202,12 @@ var _comet_dust_inst: MeshInstance3D
 var _star_data: Array = []
 var _current_exposure: float = 1.0  # 노출 스무딩 상태 (프레임 간 급격한 변화 방지)
 var _eye_view: bool = true           # 사람눈/카메라 모드 — update()에서 매 프레임 수신
+# ── 오로라 ──────────────────────────────────────────────────────────
+var _aurora_mesh: MeshInstance3D
+var _aurora_mat:  ShaderMaterial
+var _aurora_intensity: float = 0.0   # 현재 오로라 강도 (0~1)
+var _aurora_kp:   float = 0.0        # 시뮬 KP 지수 (0~9)
+var _aurora_next_event: float = 0.0  # 다음 이벤트 발생까지 시간(초)
 
 # ── 빌드 ─────────────────────────────────────────────────────────────
 func build() -> void:
@@ -215,6 +221,7 @@ func build() -> void:
 	_build_bolt()
 	_build_meteor()
 	_build_comet()
+	_build_aurora()
 
 # ── 외부 트리거 (테스트 버튼용) ──────────────────────────────────────
 func trigger_meteor(shower_mode: bool = false) -> void:
@@ -899,6 +906,7 @@ func update(
 	_update_zodiacal_light(sun_altaz, cloud_props, delta)
 	_update_milkyway(dt, hour_utc, latitude, longitude, cloud_props, delta)
 	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, dt["hour"], delta)
+	_update_aurora(sun_altaz, latitude, cloud_props, delta)
 
 func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
 	var sky_cam: Camera3D = get_viewport().get_camera_3d()
@@ -2063,3 +2071,91 @@ static func _preetham_sky_colors(sun_elev_deg: float, turbidity: float) -> Array
 
 	return [_to_rgb.call(xz,  yz,  Yz  * SCALE),
 			_to_rgb.call(hor_x, hor_y, hor_Y * SCALE)]
+
+func _build_aurora() -> void:
+	# 오로라 커튼: 반구(r=390) 위쪽 절반 — 고위도에서 북쪽 하늘에 나타남
+	var aurora_sphere := SphereMesh.new()
+	aurora_sphere.radius = 390.0
+	aurora_sphere.height = 390.0 * 2.0
+	aurora_sphere.radial_segments = 32
+	aurora_sphere.rings = 8
+	_aurora_mesh = MeshInstance3D.new()
+	_aurora_mesh.mesh = aurora_sphere
+	_aurora_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_aurora_mesh.visible = false
+	var aurora_shader := Shader.new()
+	aurora_shader.code = """
+shader_type spatial;
+render_mode blend_add, depth_draw_never, cull_back, unshaded;
+uniform float intensity    : hint_range(0.0, 1.0) = 0.0;
+uniform float time_phase   : hint_range(0.0, 628.0) = 0.0;
+uniform vec3  mag_north    = vec3(0.0, 0.0, -1.0);  // 자기 북극 방향
+uniform float kp_index     : hint_range(0.0, 9.0) = 0.0;
+varying vec3 vert_os;
+void vertex() { vert_os = VERTEX; }
+void fragment() {
+	vec3 vd  = normalize(vert_os);
+	// 자기 북극에 가까울수록 오로라 강함
+	float dot_north = dot(vd, normalize(mag_north));
+	// 위도 기반 대역: KP 낮을수록 좁은 대역 (60-70°), 높을수록 넓어짐
+	float lat_peak  = 0.5 + kp_index * 0.035;  // KP=0: 위도≈60°, KP=9: 위도≈50°
+	float lat_width = 0.06 + kp_index * 0.012;
+	float lat_band  = exp(-pow((dot_north - lat_peak) / lat_width, 2.0));
+	// 아래 방향 억제 (지평선 이하)
+	float above     = smoothstep(-0.05, 0.15, vd.y);
+	// 커튼 애니메이션: 방위각에 따라 변하는 시간 위상
+	float az        = atan(vd.x, -vd.z);
+	float curtain   = 0.5 + 0.5 * sin(az * 3.0 + time_phase * 0.8)
+	                + 0.25 * sin(az * 7.0 + time_phase * 1.3)
+	                + 0.15 * sin(vd.y * 5.0 + time_phase * 0.5);
+	curtain = clamp(curtain, 0.0, 1.0);
+	// 수직 스트리밍 (자기력선 따라)
+	float stream    = abs(sin(vd.y * 18.0 + az * 2.0 + time_phase * 2.5)) * 0.3;
+	// KP에 따른 색 변화: KP<3=녹색, KP3-6=녹+보라, KP>6=빨강 추가
+	float green_frac = clamp(1.0 - kp_index / 4.0, 0.0, 1.0);
+	float purple_frac = clamp((kp_index - 2.0) / 4.0, 0.0, 1.0);
+	float red_frac   = clamp((kp_index - 5.0) / 4.0, 0.0, 1.0);
+	vec3 aurora_col  = vec3(red_frac * 0.5, green_frac * 0.9 + 0.1, purple_frac * 0.6)
+	                  + vec3(stream * 0.2, stream * 0.5, stream * 0.3);
+	float alpha = lat_band * above * curtain * intensity;
+	ALBEDO = aurora_col * alpha;
+	ALPHA  = clamp(alpha * 0.7, 0.0, 1.0);
+}
+"""
+	_aurora_mat = ShaderMaterial.new()
+	_aurora_mat.shader = aurora_shader
+	_aurora_mat.set_shader_parameter("intensity",  0.0)
+	_aurora_mat.set_shader_parameter("time_phase", 0.0)
+	_aurora_mat.set_shader_parameter("kp_index",   0.0)
+	_aurora_mat.set_shader_parameter("mag_north",  Vector3(0.0, 0.866, -0.5))  # 자기 북극 근사
+	_aurora_mesh.material_override = _aurora_mat
+	add_child(_aurora_mesh)
+
+func _update_aurora(sun_altaz: Vector2, latitude: float, cloud_props: Dictionary, delta: float) -> void:
+	var sky_cam: Camera3D = get_viewport().get_camera_3d()
+	_aurora_mesh.global_position = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
+	# 위도 50° 미만이면 오로라 없음
+	if abs(latitude) < 50.0:
+		_aurora_intensity = lerpf(_aurora_intensity, 0.0, delta * 0.5)
+		_aurora_mat.set_shader_parameter("intensity", _aurora_intensity)
+		_aurora_mesh.visible = _aurora_intensity > 0.001
+		return
+	# 오로라는 야간 + 맑은 하늘 조건
+	var sun_elev: float  = sun_altaz.x
+	var night_f: float   = clampf((-sun_elev - 12.0) / 6.0, 0.0, 1.0)
+	var clear_f: float   = exp(-(cloud_props.get("tau", 0.0) as float) / 1.5)
+	# KP 시뮬레이션: 랜덤 이벤트 (0.3% 확률/초)
+	_aurora_next_event -= delta
+	if _aurora_next_event <= 0.0:
+		_aurora_kp = randf() * 9.0 if randf() < 0.3 else randf() * 3.0  # 30%: 강한 이벤트
+		_aurora_next_event = randf_range(600.0, 3600.0)  # 10분~1시간 간격
+	var lat_factor: float = clampf((abs(latitude) - 50.0) / 20.0, 0.0, 1.0)
+	var target_i: float  = _aurora_kp / 9.0 * lat_factor * night_f * clear_f * 0.8
+	var spd: float = 0.12 if target_i > _aurora_intensity else 0.05
+	_aurora_intensity = lerpf(_aurora_intensity, target_i, delta * spd)
+	# 시간 위상 애니메이션
+	var phase: float = _aurora_mat.get_shader_parameter("time_phase") as float
+	_aurora_mat.set_shader_parameter("time_phase", phase + delta * 0.4)
+	_aurora_mat.set_shader_parameter("kp_index",   _aurora_kp)
+	_aurora_mat.set_shader_parameter("intensity",  _aurora_intensity)
+	_aurora_mesh.visible = _aurora_intensity > 0.001
