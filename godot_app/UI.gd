@@ -712,15 +712,17 @@ func _build_all(init: Dictionary) -> void:
 		test_row.add_child(tbtn)
 	vb_test.add_child(test_row)
 
-	# 특수현상 행 — 효과 미구현, TODO 스텁 (ROADMAP Phase 1)
+	# 특수현상 행 — 일식/월식은 Phase 1 미구현(투명), 나머지 구현 완료
 	var special_row := HBoxContainer.new()
 	special_row.add_theme_constant_override("separation", maxi(2, int(4 * s)))
-	for pair: Array in [["일식", "solar_eclipse"], ["월식", "lunar_eclipse"], ["오로라", "aurora"], ["무지개↑", "rainbow_force"]]:
+	for pair: Array in [["일식", "solar_eclipse", true], ["월식", "lunar_eclipse", true], ["오로라↑", "aurora", false], ["무지개↑", "rainbow_force", false]]:
 		var tbtn := Button.new()
 		tbtn.text                  = pair[0]
 		tbtn.add_theme_font_size_override("font_size", fs_ctrl)
 		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		tbtn.modulate.a            = 0.55  # 미구현 표시
+		if pair[2]:
+			tbtn.modulate.a = 0.50  # 미구현 표시 (일식/월식)
+			tbtn.tooltip_text = "미구현 (Phase 1)"
 		var ename: String = pair[1]
 		tbtn.pressed.connect(func(): test_event_requested.emit(ename))
 		special_row.add_child(tbtn)

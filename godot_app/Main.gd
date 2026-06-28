@@ -202,7 +202,9 @@ func _on_test_event(event_name: String) -> void:
 		# TODO Phase 1: 특수현상 — 효과 미구현
 		"solar_eclipse":  push_warning("TODO solar_eclipse: 일식 셰이더 미구현 (Phase 1)")
 		"lunar_eclipse":  push_warning("TODO lunar_eclipse: 월식 붉은달 셰이더 미구현 (Phase 1)")
-		"aurora":         push_warning("TODO aurora: 오로라 볼류메트릭 미구현 (Phase 1)")
+		"aurora":         # 오로라 KP 이벤트 강제 발생 (latitude 50°+ 필요)
+			_sky._aurora_kp = randf_range(5.0, 9.0)
+			_sky._aurora_next_event = 300.0
 		"rainbow_force":  _sky.force_rainbow(!_sky._rainbow_force)  # 누를 때마다 토글
 
 func _set_view_mode(mode: String) -> void:
