@@ -130,6 +130,32 @@ const CONST_SEGS: Array = [
 	[24.429,-57.237,29.692,-61.400],     # α Eri(Achernar) → β Eri
 ]
 
+# 별자리 이름 레이블 [한국명, RA°, Dec°] — CONST_SEGS 각 별자리의 대표점
+const CONST_LABELS: Array = [
+	["큰곰자리",    185.0,  55.0],
+	["작은곰자리",  245.0,  78.0],
+	["카시오페이아",  14.0,  61.0],
+	["페르세우스",   51.0,  44.0],
+	["마차부자리",   82.0,  41.0],
+	["오리온자리",   83.0,   1.0],
+	["황소자리",     70.0,  20.0],
+	["쌍둥이자리",  107.0,  25.0],
+	["큰개자리",    103.0, -22.0],
+	["사자자리",    163.0,  17.0],
+	["처녀자리",    190.0,   2.0],
+	["목동자리",    217.0,  28.0],
+	["헤르쿨레스",  251.0,  26.0],
+	["전갈자리",    252.0, -30.0],
+	["궁수자리",    279.0, -28.0],
+	["거문고자리",  281.0,  37.0],
+	["백조자리",    305.0,  42.0],
+	["독수리자리",  296.0,   8.0],
+	["페가수스",    346.0,  22.0],
+	["남십자성",    187.0, -60.0],
+	["켄타우루스",  212.0, -55.0],
+	["용골자리",    120.0, -57.0],
+]
+
 # 외부에서 읽는 출력값
 var sky_brightness_safe: float     = 1.0
 var sky_overcast_amt_current: float = 0.0
@@ -155,6 +181,7 @@ var _saturn_ring_inst: MeshInstance3D
 var _saturn_ring_mat: ShaderMaterial
 var _const_mesh: ImmediateMesh         # 별자리 선분
 var _const_mesh_inst: MeshInstance3D
+var _const_label_nodes: Array = []    # Label3D 별자리 이름 레이블
 var _trail_mesh: ImmediateMesh         # 태양/달 일일 호
 var _trail_inst: MeshInstance3D
 var _cloud_mesh: MeshInstance3D
@@ -569,6 +596,21 @@ void fragment() {
 	_const_mesh_inst.material_override = lmat
 	_const_mesh_inst.visible = false
 	add_child(_const_mesh_inst)
+	# 별자리 이름 Label3D — 빌보드, 처음엔 숨겨둠
+	for lbl_data in CONST_LABELS:
+		var lbl := Label3D.new()
+		lbl.text              = lbl_data[0]
+		lbl.font_size         = 18
+		lbl.modulate          = Color(0.65, 0.78, 1.0, 0.0)  # alpha=0 (초기 숨김)
+		lbl.billboard         = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.no_depth_test     = true
+		lbl.outline_size      = 4
+		lbl.outline_modulate  = Color(0.0, 0.0, 0.0, 0.0)
+		lbl.double_sided      = true
+		lbl.shaded            = false
+		lbl.position          = Vector3.ZERO
+		add_child(lbl)
+		_const_label_nodes.append(lbl)
 
 func _build_clouds() -> void:
 	_cloud_mesh = MeshInstance3D.new()
@@ -1429,6 +1471,8 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 	# 별자리는 별이 보일 때만, 그리고 토글 ON일 때만 표시
 	if not show_constellations or star_vis < 0.05:
 		_const_mesh_inst.visible = false
+		for lbl in _const_label_nodes:
+			(lbl as Label3D).modulate.a = 0.0
 		return
 	_const_mesh_inst.visible = true
 	lmat.set_shader_parameter("line_alpha", clampf(star_vis * 0.45, 0.0, 0.45))
@@ -1446,6 +1490,19 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 		_const_mesh.surface_add_vertex(_altaz_to_dir(a1.x, a1.y) * radius)
 		_const_mesh.surface_add_vertex(_altaz_to_dir(a2.x, a2.y) * radius)
 	_const_mesh.surface_end()
+	# 별자리 이름 레이블 위치 업데이트
+	var lbl_alpha: float = clampf(star_vis * 0.70, 0.0, 0.70)
+	var sky_cam: Camera3D = get_viewport().get_camera_3d()
+	var cam_pos: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
+	for i in range(_const_label_nodes.size()):
+		var lbl: Label3D = _const_label_nodes[i] as Label3D
+		var ld: Array    = CONST_LABELS[i]
+		var pc: Vector2  = Astronomy.precess_radec(ld[1] as float, ld[2] as float, P)
+		var ac: Vector2  = Astronomy.radec_to_altaz(pc.x, pc.y, g, latitude, longitude)
+		var dir: Vector3 = _altaz_to_dir(ac.x, ac.y)
+		lbl.global_position = cam_pos + dir * 393.0
+		var visible_enough: bool = ac.x > -2.0  # 지평선 약간 아래도 표시
+		lbl.modulate = Color(0.65, 0.78, 1.0, lbl_alpha if visible_enough else 0.0)
 
 func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_speed: float, wind_direction: float, wind_enabled: bool, sun_altaz: Vector2, delta: float) -> void:
 	# 운형별 실제 물리 파라미터
