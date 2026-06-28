@@ -261,10 +261,9 @@ func _build_all(init: Dictionary) -> void:
 		sb.content_margin_left = 8.0; sb.content_margin_right  = 8.0
 		sb.content_margin_top  = 4.0; sb.content_margin_bottom = 4.0
 		return sb
-	var btn_n := mk_btn.call(Color(0.20, 0.22, 0.28, 0.95), Color(0.35, 0.38, 0.50))
-	var btn_h := mk_btn.call(Color(0.27, 0.30, 0.42, 0.95), Color(0.44, 0.54, 0.82))
-	var btn_p := mk_btn.call(Color(0.18, 0.36, 0.70, 0.95), Color(0.44, 0.54, 0.82))
-	var btn_t := mk_btn.call(Color(0.18, 0.36, 0.70, 0.80), Color(0.44, 0.54, 0.82))
+	var btn_n: StyleBoxFlat = mk_btn.call(Color(0.20, 0.22, 0.28, 0.95), Color(0.35, 0.38, 0.50))
+	var btn_h: StyleBoxFlat = mk_btn.call(Color(0.27, 0.30, 0.42, 0.95), Color(0.44, 0.54, 0.82))
+	var btn_p: StyleBoxFlat = mk_btn.call(Color(0.18, 0.36, 0.70, 0.95), Color(0.44, 0.54, 0.82))
 	for cls in ["Button", "OptionButton"]:
 		ui_theme.set_stylebox("normal",   cls, btn_n)
 		ui_theme.set_stylebox("hover",    cls, btn_h)
