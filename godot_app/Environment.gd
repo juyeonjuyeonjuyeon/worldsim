@@ -113,13 +113,46 @@ void fragment() {
 
 func _build_snow_accumulation() -> void:
 	_snow_ground_mesh = MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = Vector3(800, 0.5, 800)
-	_snow_ground_mesh.mesh = box
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.92, 0.94, 0.97)
-	mat.roughness = 0.9
-	mat.metallic_specular = 0.04
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(800, 800)
+	plane.subdivide_width = 40
+	plane.subdivide_depth = 40
+	_snow_ground_mesh.mesh = plane
+	var snow_shader := Shader.new()
+	snow_shader.code = """
+shader_type spatial;
+uniform vec4 albedo : source_color = vec4(0.92, 0.94, 0.97, 1.0);
+uniform float roughness : hint_range(0.0, 1.0) = 0.9;
+uniform float snow_depth : hint_range(0.0, 0.5) = 0.0;
+
+float terrain_h(vec2 xz) {
+	return
+		0.12 * sin(xz.x * 0.38 + 1.1) * cos(xz.y * 0.29 + 0.7) +
+		0.08 * sin(xz.x * 0.71 + 2.3) * cos(xz.y * 0.55 + 1.8) +
+		0.05 * cos(xz.x * 1.12 + 0.4) * sin(xz.y * 0.91 + 3.1);
+}
+
+void vertex() {
+	float eps = 0.1;
+	float h   = terrain_h(VERTEX.xz);
+	float hx  = terrain_h(VERTEX.xz + vec2(eps, 0.0));
+	float hz  = terrain_h(VERTEX.xz + vec2(0.0, eps));
+	VERTEX.y += h + snow_depth + 0.003;
+	vec3 terrain_n = normalize(vec3(-(hx - h) / eps, 1.0, -(hz - h) / eps));
+	NORMAL = normalize(mix(terrain_n, vec3(0.0, 1.0, 0.0), clamp(snow_depth * 4.0, 0.0, 1.0)));
+}
+
+void fragment() {
+	ALBEDO    = albedo.rgb;
+	ROUGHNESS = roughness;
+	SPECULAR  = 0.04;
+}
+"""
+	var mat := ShaderMaterial.new()
+	mat.shader = snow_shader
+	mat.set_shader_parameter("albedo", Color(0.92, 0.94, 0.97))
+	mat.set_shader_parameter("roughness", 0.9)
+	mat.set_shader_parameter("snow_depth", 0.0)
 	_snow_ground_mesh.material_override = mat
 	_snow_ground_mesh.visible = false
 	add_child(_snow_ground_mesh)
@@ -191,13 +224,22 @@ func _make_tree(x: float, z: float, scale_: float, seed_: int) -> void:
 		_leaf_base_colors.append(leaf_color)
 
 		var snow_cap := MeshInstance3D.new()
-		var cap_cyl := CylinderMesh.new()
-		cap_cyl.top_radius = cr * 0.65
-		cap_cyl.bottom_radius = cr * 0.80
-		cap_cyl.height = cr * 0.45
-		cap_cyl.rings = 1
-		snow_cap.mesh = cap_cyl
-		snow_cap.position = Vector3(0, cr * 0.72, 0)
+		var cap_sph := SphereMesh.new()
+		cap_sph.radius = cr * 0.70
+		cap_sph.height = cr * 0.48   # 납작한 반구형
+		cap_sph.radial_segments = 10
+		cap_sph.rings = 4
+		snow_cap.mesh = cap_sph
+		snow_cap.position = Vector3(
+			rng.randf_range(-cr * 0.12, cr * 0.12),
+			cr * 0.60,
+			rng.randf_range(-cr * 0.12, cr * 0.12)
+		)
+		snow_cap.rotation_degrees = Vector3(
+			rng.randf_range(-10.0, 10.0),
+			rng.randf_range(0.0, 360.0),
+			rng.randf_range(-10.0, 10.0)
+		)
 		var cap_mat := StandardMaterial3D.new()
 		cap_mat.albedo_color = Color(0.92, 0.94, 0.97)
 		cap_mat.roughness = 0.9
@@ -762,12 +804,11 @@ func update(
 		if cap.visible:
 			cap.scale.y = clampf(ground_snow, 0.05, 1.0)
 
-	# 눈더미 메쉬
-	_snow_ground_mesh.visible = ground_snow > 0.12
+	# 눈더미 메쉬 — 지형 굴곡을 따라가며 두께만 변화
+	_snow_ground_mesh.visible = ground_snow > 0.04
 	if _snow_ground_mesh.visible:
-		var t: float = clampf((ground_snow - 0.12) / 0.88, 0.0, 1.0)
-		_snow_ground_mesh.scale.y = t
-		_snow_ground_mesh.position.y = 0.25 * t
+		var snow_depth: float = clampf((ground_snow - 0.04) / 0.96, 0.0, 1.0) * 0.35
+		(_snow_ground_mesh.material_override as ShaderMaterial).set_shader_parameter("snow_depth", snow_depth)
 
 	# 수위 누적 — 지구 물리: 50mm/hr 폭우 30분 → 1m, 배수 2시간/m
 	if is_rain:
