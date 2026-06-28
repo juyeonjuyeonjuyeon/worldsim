@@ -144,6 +144,8 @@ var _moon_mesh: MeshInstance3D
 var _moon_shader_mat: ShaderMaterial
 var _sun_mesh: MeshInstance3D
 var _sun_shader_mat: ShaderMaterial
+var _prev_sun_elev: float = -90.0   # 지평선 횡단 감지용
+var _green_flash_t: float = 0.0     # 녹색 섬광 진행 (0=없음, 1=최대)
 var _world_env: WorldEnvironment
 var _sky_mat: ProceduralSkyMaterial
 var _stars_mm: MultiMeshInstance3D
@@ -347,6 +349,8 @@ uniform float cloud_fade    : hint_range(0.0, 1.0)   = 1.0;
 uniform float horizon_fade  : hint_range(0.0, 1.0)   = 1.0;
 // 사람눈 모드: 1.5 (크고 부드러운 광환), 카메라 모드: 0.8 (좁은 렌즈 블룸)
 uniform float glare_scale   : hint_range(0.5, 2.0)   = 1.0;
+// 녹색 섬광: 지평선 횡단 순간 디스크를 초록/청록으로 잠시 변색 (0=없음)
+uniform float green_flash   : hint_range(0.0, 1.0)   = 0.0;
 
 varying float v_world_dir_y;
 
@@ -380,6 +384,8 @@ void fragment() {
 	float haze_t     = clamp((1.0 - horizon_fade) * 1.5, 0.0, 1.0);
 	float outer_frac = clamp((d - 0.10) * 3.0, 0.0, 1.0);
 	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t);
+	// 녹색 섬광: 디스크 원반만 초록/청록으로 혼합
+	ALBEDO = mix(ALBEDO, vec3(0.15, 0.90, 0.55), disc * green_flash);
 
 	// horizon_fade: 고도 −3°→+1° smoothstep (대기 감쇠 / haze_t 연동)
 	// ground_fade: 카메라 수평선 기준 지평면 절단
@@ -392,6 +398,7 @@ void fragment() {
 	_sun_shader_mat.set_shader_parameter("haze_color",   Vector3(1.0, 0.38, 0.05))
 	_sun_shader_mat.set_shader_parameter("cloud_fade",    1.0)
 	_sun_shader_mat.set_shader_parameter("horizon_fade", 1.0)
+	_sun_shader_mat.set_shader_parameter("green_flash",   0.0)
 	_sun_shader_mat.set_shader_parameter("glare_scale",  1.5)
 	_sun_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_sun_mesh.material_override = _sun_shader_mat
@@ -941,6 +948,18 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 
 	# 태양 원반 색을 DirectionalLight 색과 동기화 (지평선=주황, 상공=흰색)
 	_sun_shader_mat.set_shader_parameter("sun_color", Vector3(sun_color.r, sun_color.g, sun_color.b))
+
+	# ── 녹색 섬광 (Green Flash) ─────────────────────────────────────────
+	# 태양이 지평선을 느리게 횡단 + 맑은 하늘 조건에서 1회 점등
+	var _gf_crossing: bool = ((_prev_sun_elev > 0.15 and elevation < 0.15) or
+	                          (_prev_sun_elev < -0.15 and elevation > -0.15))
+	var _gf_clear: bool    = (cloud_props.get("tau", 0.0) as float) < 0.5
+	var _gf_slow: bool     = abs(elevation - _prev_sun_elev) < 0.4  # 수동 점프 제외
+	if _gf_crossing and _gf_clear and _gf_slow:
+		_green_flash_t = 1.0
+	_green_flash_t = lerpf(_green_flash_t, 0.0, delta * 0.9)  # ~1.5초 지속
+	_prev_sun_elev = elevation
+	_sun_shader_mat.set_shader_parameter("green_flash", _green_flash_t)
 
 	var sun_lux: float  = _sun_illuminance(elevation)
 	var moon_lux: float = 0.0
