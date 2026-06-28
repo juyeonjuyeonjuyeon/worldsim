@@ -200,7 +200,7 @@ func _on_test_event(event_name: String) -> void:
 		"solar_eclipse":  push_warning("TODO solar_eclipse: 일식 셰이더 미구현 (Phase 1)")
 		"lunar_eclipse":  push_warning("TODO lunar_eclipse: 월식 붉은달 셰이더 미구현 (Phase 1)")
 		"aurora":         push_warning("TODO aurora: 오로라 볼류메트릭 미구현 (Phase 1)")
-		"rainbow_force":  push_warning("TODO rainbow_force: 무지개 강제 표시 미구현 (Phase 1)")
+		"rainbow_force":  _sky.force_rainbow(!_sky._rainbow_force)  # 누를 때마다 토글
 
 func _set_view_mode(mode: String) -> void:
 	_camera.set_view_mode(mode)

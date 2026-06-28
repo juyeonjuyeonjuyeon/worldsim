@@ -155,6 +155,7 @@ var _cloud_shader_mat: ShaderMaterial
 var _rainbow_mesh: MeshInstance3D
 var _rainbow_mat: ShaderMaterial
 var _rainbow_intensity: float = 0.0
+var _rainbow_force: bool = false   # true면 기상 조건 무관하게 강제 표시
 var _rain_rate_ema: float = 0.0   # 최근 강수 이력 EMA (τ≈30s) — 무지개 조건용
 var _fog_density_cur: float   = 0.0
 var _bolt_mesh: ImmediateMesh          # 번개 볼트 선분
@@ -592,6 +593,9 @@ void fragment() {
 	_cloud_mesh.material_override = _cloud_shader_mat
 	add_child(_cloud_mesh)
 
+func force_rainbow(enabled: bool) -> void:
+	_rainbow_force = enabled
+
 func _build_rainbow() -> void:
 	_rainbow_mesh = MeshInstance3D.new()
 	var sphere := SphereMesh.new()
@@ -722,6 +726,8 @@ func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness
 	var sun_vis: float = clampf(1.0 - sky_overcast_amt_current * 0.85, 0.0, 1.0)
 
 	var target: float = clampf(elev_factor * droplet_air * sun_vis, 0.0, 1.0)
+	if _rainbow_force:
+		target = 1.0  # 강제 표시: 기상·태양 조건 무시
 
 	# ── 부무지개: 최근 강수가 강했을 때(굵은 물방울)만 흐릿하게 출현 ──────
 	# EMA 기준 5mm/hr 이상 강수 이력이 있어야 2차 반사 확인 가능한 굵은 물방울
