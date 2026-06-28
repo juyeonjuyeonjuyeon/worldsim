@@ -1165,16 +1165,24 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sky_night_blend: float = clampf((-elevation - 6.0) / 12.0, 0.0, 1.0)
 
 	# ── 사람눈/카메라 모드 분기 ───────────────────────────────────────────
-	var scotopic_boost: float = 4.0 if _eye_view else 1.0
 	_sun_shader_mat.set_shader_parameter("glare_scale", 1.5 if _eye_view else 0.8)
+	# Purkinje 이동: 조도에 따른 연속 암순응 계산
+	# mesopic 전환 구간: 0.001 lux(별빛, 완전 암순응) ~ 0.3 lux(보름달, 광수용체)
+	# scotopic_w=1 → 간상체 우세 (청록 강조, 적색 억제, 4× 밝기 감도)
+	# scotopic_w=0 → 추상체 우세 (낮, 카메라 모드)
+	var scotopic_w: float = 0.0
+	if _eye_view:
+		scotopic_w = clampf(1.0 - log(max(total_lux, 1e-6) / 0.001) / log(300.0), 0.0, 1.0)
+	var scotopic_boost: float = 1.0 + scotopic_w * 3.0   # 1× → 4× 연속
 
 	# ── 밤하늘 기본색 (moon_sky_factor: 보름달=2.5×) ─────────────────────
 	# ProceduralSkyMaterial은 tonemap_exposure 보정을 받지 않음 → brt 제거, 표시값 직접 지정
 	# * 16.0: 표시용 밝기 스케일 (brt=1일 때의 기존 값과 동일)
 	var moon_sky_factor: float = 1.0 + clampf(moon_lux / 0.27, 0.0, 1.0) * 1.5
-	var scotopic_r: float = scotopic_boost * (0.80 if _eye_view else 1.0)
-	var scotopic_g: float = scotopic_boost * (0.90 if _eye_view else 1.0)
-	var scotopic_b: float = scotopic_boost * (1.15 if _eye_view else 1.0)
+	# CIE 1951 스코토픽 V'(λ): 507nm 피크 → R×0.80, G×0.90, B×1.15 근사 (scotopic_w=1 시)
+	var scotopic_r: float = scotopic_boost * (1.0 - scotopic_w * 0.20)
+	var scotopic_g: float = scotopic_boost * (1.0 - scotopic_w * 0.10)
+	var scotopic_b: float = scotopic_boost * (1.0 + scotopic_w * 0.15)
 	var night_top := Color(
 		0.00190 * moon_sky_factor * scotopic_r,
 		0.00218 * moon_sky_factor * scotopic_g,
@@ -1236,8 +1244,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 깊은밤(-18°이하): Purkinje 이동으로 청색 감도 잔류 → 기존 0.10에서 0.28로 상향
 	# 낮(elevation>0°): twilight_factor=0 → twi_sat_floor 사용, sat≈1.0이라 floor는 영향 없음
 	var twilight_factor: float = clampf(-elevation / 18.0, 0.0, 1.0)
-	var twi_sat_floor: float   = 0.65 if _eye_view else 0.72   # 박명: 하늘색 채도 유지
-	var night_sat_floor: float = 0.28 if _eye_view else 0.30   # 밤: 청색 잔류 (Purkinje)
+	var twi_sat_floor: float   = lerpf(0.72, 0.65, scotopic_w)  # 박명: 암순응 강도로 연속
+	var night_sat_floor: float = lerpf(0.30, 0.28, scotopic_w)  # 밤: Purkinje 청색 잔류
 	var sat_floor: float = lerp(twi_sat_floor, night_sat_floor, twilight_factor)
 	_world_env.environment.adjustment_saturation = lerp(sat_floor, 1.0, sat)
 
