@@ -599,6 +599,7 @@ func update(
 	wind_enabled: bool,
 	cloud_props: Dictionary,
 	sim_month: int,
+	latitude: float,
 	sky_brightness: float,
 	sky_overcast: float,
 	rain_streak_scale: float,
@@ -674,13 +675,17 @@ func update(
 
 	# 지면 젖음/눈 축적
 	# 강우강도에 비례한 포화 속도: 50mm/hr 폭우 → 5분(300s), 20mm/hr → 12.5분, 2.5mm/hr → ~1.5시간
-	# 계절별 눈 녹음: 겨울(12~2월)=1시간, 초봄·늦가을=30분, 봄·가을=20분, 여름=10분
+	# 눈 녹음: 온도 직접 사용 — month 기반은 남반구 계절 역전을 반영 못 함.
+	# 0°C 이하 → 거의 정지, 10°C → ~30분, 25°C+ → ~10분 (태양복사 간접 반영)
 	var snow_melt: float
-	match sim_month:
-		12, 1, 2: snow_melt = 1.0 / 3600.0
-		3, 11:    snow_melt = 1.0 / 1800.0
-		4, 10:    snow_melt = 1.0 / 1200.0
-		_:        snow_melt = 1.0 / 600.0
+	if temperature <= 0.0:
+		snow_melt = 1.0 / 7200.0
+	elif temperature < 10.0:
+		snow_melt = lerp(1.0 / 3600.0, 1.0 / 1800.0, temperature / 10.0)
+	elif temperature < 25.0:
+		snow_melt = lerp(1.0 / 1800.0, 1.0 / 600.0, (temperature - 10.0) / 15.0)
+	else:
+		snow_melt = 1.0 / 600.0
 	if is_rain:
 		var wet_rate: float = (rain_rate / 50.0) / 300.0
 		ground_wetness = clampf(ground_wetness + delta * wet_rate, 0.0, 1.0)
@@ -731,7 +736,7 @@ func update(
 
 	# 나뭇잎 계절 색 + 젖음 효과
 	var wet: float = ground_wetness * (1.0 - ground_snow)
-	var season_tint: Color = _seasonal_leaf_tint(sim_month)
+	var season_tint: Color = _seasonal_leaf_tint(sim_month, latitude)
 	for i in range(_leaf_mats.size()):
 		var base: Color = _leaf_base_colors[i]
 		var seasonal := Color(
@@ -889,8 +894,12 @@ static func _classify_snow(temperature: float, wind_speed: float) -> String:
 		return "GRAUPEL"
 	return "WET"
 
-static func _seasonal_leaf_tint(month: int) -> Color:
-	match month:
+static func _seasonal_leaf_tint(month: int, latitude: float) -> Color:
+	# 남반구: 6개월 계절 역전 (1월↔7월 등)
+	var eff: int = month
+	if latitude < 0.0:
+		eff = ((month - 1 + 6) % 12) + 1
+	match eff:
 		3, 4:       return Color(0.85, 1.05, 0.55)
 		5, 6, 7, 8: return Color(0.70, 1.00, 0.50)
 		9, 10:      return Color(1.80, 0.75, 0.12)

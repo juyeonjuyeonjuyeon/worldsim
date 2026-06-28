@@ -197,7 +197,7 @@ func _update_all(delta: float) -> void:
 
 	_env.update(
 		weather_type, rain_rate, wind_speed, wind_direction, wind_enabled,
-		cloud_props, sim_month,
+		cloud_props, sim_month, latitude,
 		_sky.sky_brightness_safe, _sky.sky_overcast_amt_current,
 		rain_streak_scale, snow_size_scale,
 		sim_temperature, delta)
