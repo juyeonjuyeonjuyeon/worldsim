@@ -156,6 +156,9 @@ var _rainbow_mesh: MeshInstance3D
 var _rainbow_mat: ShaderMaterial
 var _rainbow_intensity: float = 0.0
 var _rainbow_force: bool = false   # true면 기상 조건 무관하게 강제 표시
+var _moonbow_mesh: MeshInstance3D
+var _moonbow_mat: ShaderMaterial
+var _moonbow_intensity: float = 0.0
 var _rain_rate_ema: float = 0.0   # 최근 강수 이력 EMA (τ≈30s) — 무지개 조건용
 var _fog_density_cur: float   = 0.0
 var _bolt_mesh: ImmediateMesh          # 번개 볼트 선분
@@ -662,6 +665,22 @@ void fragment() {
 	_rainbow_mesh.material_override = _rainbow_mat
 	add_child(_rainbow_mesh)
 
+	# 달무지개: 동일 셰이더, 별도 머티리얼 인스턴스 — moon_dir 공급, 최대 강도 0.04
+	var mb_sphere := SphereMesh.new()
+	mb_sphere.radius = 451.0; mb_sphere.height = 902.0
+	mb_sphere.rings = 48; mb_sphere.radial_segments = 96
+	_moonbow_mesh = MeshInstance3D.new()
+	_moonbow_mesh.mesh = mb_sphere
+	_moonbow_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_moonbow_mesh.visible = false
+	_moonbow_mat = ShaderMaterial.new()
+	_moonbow_mat.shader = rshader          # 동일 셰이더 재사용
+	_moonbow_mat.set_shader_parameter("sun_dir",            Vector3(0.0, 1.0, 0.0))
+	_moonbow_mat.set_shader_parameter("intensity",          0.0)
+	_moonbow_mat.set_shader_parameter("secondary_strength", 0.0)
+	_moonbow_mesh.material_override = _moonbow_mat
+	add_child(_moonbow_mesh)
+
 # ── 갱신 ─────────────────────────────────────────────────────────────
 func update(
 	sun_altaz: Vector2,
@@ -691,10 +710,10 @@ func update(
 	_update_meteor(sun_altaz, cloud_props, dt, hour_utc, latitude, longitude, delta)
 	_update_comet(sun_altaz, dt, hour_utc, latitude, longitude)
 	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
-	_update_rainbow(sun_altaz, cloud_props, ground_wetness, delta)
+	_update_rainbow(sun_altaz, moon, cloud_props, ground_wetness, delta)
 	_update_fog(weather_type, cloud_props.get("rain_rate", 0.0), temperature, wind_speed, cloud_props, dt["hour"], delta)
 
-func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
+func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, ground_wetness: float, delta: float) -> void:
 	var sky_cam: Camera3D = get_viewport().get_camera_3d()
 	var cam_origin: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
 	_rainbow_mesh.global_position = cam_origin
@@ -740,6 +759,24 @@ func _update_rainbow(sun_altaz: Vector2, cloud_props: Dictionary, ground_wetness
 	_rainbow_intensity = lerpf(_rainbow_intensity, target, delta * spd)
 	_rainbow_mat.set_shader_parameter("intensity", _rainbow_intensity)
 	_rainbow_mesh.visible = _rainbow_intensity > 0.005
+
+	# ── 달무지개 (Moonbow) ────────────────────────────────────────────────
+	# 동일 Descartes 각도(40.6°~42.5°), moon_dir 기준. 최대 강도 0.04 (태양무지개의 4%)
+	var moon_elev  : float = moon.get("alt",   0.0)
+	var moon_az_v  : float = moon.get("az",    0.0)
+	var moon_illum_v: float = moon.get("illum", 0.0)
+	var moon_ef    := 0.0
+	if moon_elev >= 1.0 and moon_elev <= 42.0:
+		moon_ef = smoothstep(1.0, 8.0, moon_elev) * smoothstep(42.0, 34.0, moon_elev)
+	var sun_below  := clampf((-sun_altaz.x - 5.0) / 10.0, 0.0, 1.0)  # 태양이 −5°이하
+	var moon_bright := clampf((moon_illum_v - 0.25) / 0.75, 0.0, 1.0)  # 반달 이상만
+	var target_mb  := moon_ef * droplet_air * moon_bright * sun_below * 0.04
+	_moonbow_mat.set_shader_parameter("sun_dir", _altaz_to_dir(moon_elev, moon_az_v))
+	var spd_mb := 0.08 if target_mb > _moonbow_intensity else 0.04
+	_moonbow_intensity = lerpf(_moonbow_intensity, target_mb, delta * spd_mb)
+	_moonbow_mat.set_shader_parameter("intensity", _moonbow_intensity)
+	_moonbow_mesh.global_position = cam_origin
+	_moonbow_mesh.visible = _moonbow_intensity > 0.0005
 
 func _update_fog(weather_type: String, rain_rate: float, temperature: float, wind_speed: float, cloud_props: Dictionary, hour_local: float, delta: float) -> void:
 	var env: Environment = _world_env.environment
