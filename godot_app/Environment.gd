@@ -1,7 +1,8 @@
 class_name WorldSimEnv
 extends Node
 
-const FIELD_HALF: float = 15.0
+const FIELD_HALF: float  = 15.0  # 지면 이펙트(스플래시·물웅덩이) 반경
+const PRECIP_HALF: float = 28.0  # 강수 파티클 방출 박스 반경 — 카메라 추적 + FOV 여유 포함
 
 # 외부에서 읽는 출력값
 var ground_wetness: float = 0.0
@@ -69,8 +70,14 @@ func _build_ground() -> void:
 	var terrain_shader := Shader.new()
 	terrain_shader.code = """
 shader_type spatial;
-uniform vec4 albedo    : source_color = vec4(0.16, 0.24, 0.08, 1.0);
-uniform float roughness : hint_range(0.0, 1.0) = 0.85;
+uniform vec4 albedo      : source_color = vec4(0.16, 0.24, 0.08, 1.0);
+uniform float roughness  : hint_range(0.0, 1.0) = 0.85;
+// 카메라 기준 거리 페이드: 카메라 XZ를 매 프레임 넘겨받아 발밑은 항상 선명하게
+uniform vec2 camera_xz   = vec2(0.0, 0.0);
+// 지평선면(800×800) albedo와 동기화 — 날씨/서리로 색 바뀔 때 같이 업데이트
+uniform vec3 horizon_color : source_color = vec3(0.16, 0.24, 0.08);
+
+varying vec2 v_world_xz;
 
 float terrain_h(vec2 xz) {
 	return
@@ -85,19 +92,30 @@ void vertex() {
 	float hx  = terrain_h(VERTEX.xz + vec2(eps, 0.0));
 	float hz  = terrain_h(VERTEX.xz + vec2(0.0, eps));
 	VERTEX.y += h;
-	NORMAL = normalize(vec3(-(hx - h) / eps, 1.0, -(hz - h) / eps));
+	vec3 terrain_n = normalize(vec3(-(hx - h) / eps, 1.0, -(hz - h) / eps));
+	// edge_fade 구간에서 노멀을 (0,1,0)으로 평탄화 → horizon_plane과 조명 연속성 유지
+	float dist_v = length(VERTEX.xz - camera_xz);
+	float fade_v = smoothstep(18.0, 28.0, dist_v);
+	NORMAL = normalize(mix(terrain_n, vec3(0.0, 1.0, 0.0), fade_v));
+	// ground mesh는 origin 고정 → local XZ = world XZ
+	v_world_xz = VERTEX.xz;
 }
 
 void fragment() {
-	ALBEDO    = albedo.rgb;
+	// 카메라에서의 수평 거리 → 18m부터 페이드 시작, 28m에서 완전히 지평선 색
+	float dist     = length(v_world_xz - camera_xz);
+	float edge_fade = smoothstep(18.0, 28.0, dist);
+	ALBEDO    = mix(albedo.rgb, horizon_color, edge_fade);
 	ROUGHNESS = roughness;
 	SPECULAR  = 0.04;
 }
 """
 	_ground_mat = ShaderMaterial.new()
 	_ground_mat.shader = terrain_shader
-	_ground_mat.set_shader_parameter("albedo",    Color(0.16, 0.24, 0.08))
-	_ground_mat.set_shader_parameter("roughness", 0.85)
+	_ground_mat.set_shader_parameter("albedo",        Color(0.16, 0.24, 0.08))
+	_ground_mat.set_shader_parameter("roughness",     0.85)
+	_ground_mat.set_shader_parameter("camera_xz",    Vector2.ZERO)
+	_ground_mat.set_shader_parameter("horizon_color", Vector3(0.16, 0.24, 0.08))
 	_ground_mesh.material_override = _ground_mat
 	add_child(_ground_mesh)
 
@@ -477,12 +495,12 @@ func _build_flood_plane() -> void:
 
 func _build_rain_snow() -> void:
 	_rain_particles = _make_precip_particles(false)
-	# 파티클이 y=18에서 y=0까지 낙하 + 바람 drift → AABB가 emission box(y=18)만 커버하면
-	# 수평 시점에서 파티클 시스템 전체가 frustum-cull 됨. 25m 여유를 추가해 방지.
-	_rain_particles.extra_cull_margin = 25.0
+	# 이미터 중심(camera_y+12)에서 최대 낙하 거리(34m) 아래까지 파티클이 분포.
+	# local_coords=false이므로 AABB가 월드 좌표계 기준 → 여유를 충분히 확보.
+	_rain_particles.extra_cull_margin = 60.0
 	add_child(_rain_particles)
 	_snow_particles = _make_precip_particles(true)
-	_snow_particles.extra_cull_margin = 25.0
+	_snow_particles.extra_cull_margin = 60.0
 	add_child(_snow_particles)
 
 func _build_splash() -> void:
@@ -569,10 +587,13 @@ func _make_precip_particles(is_snow: bool) -> GPUParticles3D:
 	var p := GPUParticles3D.new()
 	p.amount = 2000 if not is_snow else 1200
 	p.lifetime = 3.5 if not is_snow else 8.0
-	p.position = Vector3(0, 18, 0)
+	# global_position은 update()에서 매 프레임 카메라 위치로 덮어씀
 	var mat := ParticleProcessMaterial.new()
 	mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	mat.emission_box_extents = Vector3(FIELD_HALF, 0.1, FIELD_HALF)
+	# 수직 기둥 방출: 카메라 어느 방향을 봐도 이미 파티클이 분포해 있음
+	# 비: 중심=camera_y+12, 반경±17 → camera_y-5 ~ camera_y+29 (낙하거리≈34m)
+	# 눈: 중심=camera_y+ 5, 반경± 6 → camera_y-1 ~ camera_y+11 (낙하거리≈10m)
+	mat.emission_box_extents = Vector3(PRECIP_HALF, 17.0 if not is_snow else 6.0, PRECIP_HALF)
 	mat.direction = Vector3(0, -1, 0)
 	mat.spread = 6.0 if not is_snow else 25.0
 	mat.angle_min = -8.0 if not is_snow else -40.0
@@ -656,8 +677,18 @@ func update(
 	snow_size_scale: float,
 	temperature: float,
 	hour_local: float,
-	delta: float
+	delta: float,
+	camera_pos: Vector3 = Vector3.ZERO
 ) -> void:
+	# 지형 페이드: 카메라 XZ를 매 프레임 셰이더에 전달
+	_ground_mat.set_shader_parameter("camera_xz", Vector2(camera_pos.x, camera_pos.z))
+
+	# 강수 파티클 이미터를 카메라 3D 위치로 추적 (Y축 포함)
+	# 중심을 카메라 위로 올려 방출 기둥이 camera_y 기준 위아래를 균형 있게 덮음
+	# 비(±17m): camera_y-5 ~ camera_y+29, 눈(±6m): camera_y-1 ~ camera_y+11
+	_rain_particles.global_position = Vector3(camera_pos.x, camera_pos.y + 12.0, camera_pos.z)
+	_snow_particles.global_position = Vector3(camera_pos.x, camera_pos.y +  5.0, camera_pos.z)
+
 	var is_rain: bool = weather_type == "RAIN"
 	var is_snow: bool = weather_type == "SNOW"
 	_rain_particles.emitting = is_rain
@@ -823,6 +854,8 @@ func update(
 	_ground_mat.set_shader_parameter("roughness", frost_rough)
 	_horizon_mat.albedo_color = c
 	_horizon_mat.roughness    = frost_rough
+	# 지형 셰이더 페이드 목표 색을 지평선면 색과 동기화
+	_ground_mat.set_shader_parameter("horizon_color", Vector3(c.r, c.g, c.b))
 
 	# 나뭇잎 계절 색 + 젖음 효과
 	var wet: float = ground_wetness * (1.0 - ground_snow)

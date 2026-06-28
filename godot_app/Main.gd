@@ -29,8 +29,8 @@ const OKTA_CUMULUS: float = 4.0 / 8.0
 const OKTA_OVERCAST: float = 8.0 / 8.0
 
 # ── 날씨/시간 상태 ──
-var weather_type: String = "RAIN"   # CLEAR/CIRRUS/CUMULUS/OVERCAST/RAIN/SNOW
-var rain_rate: float = 20.0
+var weather_type: String = "CLEAR"  # CLEAR/CIRRUS/CUMULUS/OVERCAST/RAIN/SNOW
+var rain_rate: float = 0.0
 var overcast_intensity: float = 0.6
 var wind_enabled: bool = true
 var wind_speed: float = 1.6
@@ -244,14 +244,17 @@ func _update_all(delta: float) -> void:
 		_sound.lightning_flash_intensity,
 		_sound.lightning_bolt_dist_km,
 		dt, hour_utc, latitude, longitude,
-		sim_temperature, _env.ground_wetness, delta)
+		sim_temperature, _env.ground_wetness, delta,
+		_camera.eye_view)
 
+	var _cam_pos: Vector3 = _camera.get_camera().global_position
 	_env.update(
 		weather_type, rain_rate, wind_speed, wind_direction, wind_enabled,
 		cloud_props, sim_month, latitude,
 		_sky.sky_brightness_safe, _sky.sky_overcast_amt_current,
 		rain_streak_scale, snow_size_scale,
-		sim_temperature, fmod(dt["hour"], 24.0), delta)
+		sim_temperature, fmod(dt["hour"], 24.0), delta,
+		_cam_pos)
 
 	_sound.update(weather_type, wind_enabled, wind_speed, rain_rate, delta)
 
