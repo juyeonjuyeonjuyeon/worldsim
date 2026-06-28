@@ -1013,6 +1013,13 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		0.00085 * moon_sky_factor * scotopic_g,
 		0.00140 * moon_sky_factor * scotopic_b) * 16.0
 
+	# ── 대기광 (Airglow): 중간권 화학 발광 — 야간 깊을수록 미묘한 녹색 조 ─
+	# OI 557.7 nm (원자산소), OH 밴드가 주 기여. 맑은 밤에만 보임.
+	var airglow_t: float = clampf((-elevation - 18.0) / 8.0, 0.0, 1.0)
+	airglow_t *= exp(-(cloud_props["tau"] as float) / 3.0)
+	night_horizon += Color(0.003, 0.012, 0.005) * airglow_t
+	night_top     += Color(0.001, 0.005, 0.002) * airglow_t
+
 	# ── 하늘 색: Preetham(1999) 대기 산란 모델 + 야간 블렌드 ──────────────
 	# Layer A (elevation ≥ −2°): Preetham 분석 모델 — 손으로 색 지정 없음
 	# Layer B (elevation < −6°): 기존 야간 고정 색 유지 (night_top / night_horizon)
