@@ -617,6 +617,8 @@ uniform vec3  sun_dir            = vec3(0.0, 1.0, 0.0);
 uniform float intensity          : hint_range(0.0, 1.0) = 0.0;
 // 부무지개 강도 (0=없음, 0.10=최대). 굵은 물방울+강한 햇빛에서만 열림.
 uniform float secondary_strength : hint_range(0.0, 0.15) = 0.0;
+// 과잉호 강도 (0=없음, 0.4=최대). 작은/균일 물방울(안개비)에서 더 뚜렷함.
+uniform float supernumerary_str  : hint_range(0.0, 0.4)  = 0.0;
 varying vec3 vert_os;
 
 vec3 hue_to_rgb(float h) {
@@ -637,6 +639,13 @@ void fragment() {
 	// 지평선 아래(view_dir.y<0)로 갈수록 빠르게 소멸
 	float horizon_fade = clamp(view_dir.y * 12.0 + 0.5, 0.0, 1.0);
 
+	// 과잉호 (Supernumerary arcs): 주무지개 안쪽 파동 간섭 줄무늬 (36°~40.6°)
+	// 실제 물리: 2개 경로 위상차 → 보강/상쇄 교대. 간격 ≈ 1.5° (작은 물방울 기준).
+	float super_zone = smoothstep(35.5, 36.5, ang) * smoothstep(40.6, 39.8, ang);
+	float pattern    = max(0.0, cos((ang - 36.5) / 1.5 * 6.28318));
+	float hue_s      = clamp((ang - 36.5) / 4.1, 0.0, 1.0);
+	vec3  col_super  = hue_to_rgb(0.55 - hue_s * 0.55) * pattern * super_zone * supernumerary_str;
+
 	// 1차(주) 무지개: 40.6°~42.5° (보라→빨강)
 	float band1 = smoothstep(40.2, 40.6, ang) * smoothstep(42.9, 42.5, ang);
 	float hue1  = clamp((ang - 40.6) / (42.5 - 40.6), 0.0, 1.0);
@@ -651,8 +660,8 @@ void fragment() {
 	float hue2  = clamp((ang - 50.4) / (53.4 - 50.4), 0.0, 1.0);
 	vec3  col2  = hue_to_rgb(hue2 * 0.75) * band2 * secondary_strength;
 
-	vec3 col = col1 + col2;
-	float arc_alpha = clamp((band1 + band2 * secondary_strength) * horizon_fade * 2.0, 0.0, 0.55);
+	vec3 col = col_super + col1 + col2;
+	float arc_alpha = clamp((band1 + super_zone * pattern * supernumerary_str + band2 * secondary_strength) * horizon_fade * 2.0, 0.0, 0.60);
 	ALBEDO = col * intensity;
 	ALPHA  = arc_alpha * intensity;
 }
@@ -662,6 +671,7 @@ void fragment() {
 	_rainbow_mat.set_shader_parameter("sun_dir",            Vector3(0.0, 1.0, 0.0))
 	_rainbow_mat.set_shader_parameter("intensity",          0.0)
 	_rainbow_mat.set_shader_parameter("secondary_strength", 0.0)
+	_rainbow_mat.set_shader_parameter("supernumerary_str",  0.0)
 	_rainbow_mesh.material_override = _rainbow_mat
 	add_child(_rainbow_mesh)
 
@@ -678,6 +688,7 @@ void fragment() {
 	_moonbow_mat.set_shader_parameter("sun_dir",            Vector3(0.0, 1.0, 0.0))
 	_moonbow_mat.set_shader_parameter("intensity",          0.0)
 	_moonbow_mat.set_shader_parameter("secondary_strength", 0.0)
+	_moonbow_mat.set_shader_parameter("supernumerary_str",  0.0)
 	_moonbow_mesh.material_override = _moonbow_mat
 	add_child(_moonbow_mesh)
 
@@ -753,6 +764,11 @@ func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictiona
 	# 최대 0.10 → 주무지개의 10% 밝기 (실제 부무지개 ≈ 5~10%)
 	var sec_eligibility: float = clampf((_rain_rate_ema - 5.0) / 15.0, 0.0, 1.0)
 	_rainbow_mat.set_shader_parameter("secondary_strength", sec_eligibility * target * 0.10)
+
+	# ── 과잉호: 작은/균일 물방울(안개비·이슬비)에서 파동 간섭 줄무늬 출현 ──
+	# 굵은 물방울(sec_eligibility↑)일수록 간섭 약화. 최대 강도 0.35.
+	var super_str: float = clampf(1.0 - sec_eligibility - _rain_rate_ema / 8.0, 0.0, 1.0) * target * 0.35
+	_rainbow_mat.set_shader_parameter("supernumerary_str", super_str)
 
 	# 출현 속도 낮춤(0.5→0.15): 서서히 뜨게. 소멸은 천천히(0.08) 유지.
 	var spd: float = 0.15 if target > _rainbow_intensity else 0.08
