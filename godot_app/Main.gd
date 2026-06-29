@@ -128,6 +128,26 @@ func _ready() -> void:
 	_ui.play_state_changed.connect(_on_play_state_changed)
 	_ui.build(_ui_init_dict())
 	_update_all(0.0)
+	_maybe_auto_screenshot()
+
+func _maybe_auto_screenshot() -> void:
+	var args := OS.get_cmdline_user_args()
+	var idx := args.find("--auto-screenshot")
+	if idx < 0:
+		return
+	var out_path: String = "user://auto_screenshot.png" if idx + 1 >= args.size() else args[idx + 1]
+	var time_idx := args.find("--time")
+	if time_idx >= 0 and time_idx + 1 < args.size():
+		time_of_day = float(args[time_idx + 1])
+		_update_all(0.0)
+	var yaw_idx := args.find("--yaw")
+	if yaw_idx >= 0 and yaw_idx + 1 < args.size():
+		_camera._yaw = deg_to_rad(float(args[yaw_idx + 1]))
+	await get_tree().create_timer(3.0).timeout
+	var img: Image = get_viewport().get_texture().get_image()
+	img.save_png(out_path)
+	print("AUTO SCREENSHOT: " + out_path)
+	get_tree().quit()
 
 func _ui_init_dict() -> Dictionary:
 	return {
