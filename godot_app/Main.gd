@@ -144,10 +144,29 @@ func _maybe_auto_screenshot() -> void:
 	var yaw_idx := args.find("--yaw")
 	if yaw_idx >= 0 and yaw_idx + 1 < args.size():
 		_camera._yaw = deg_to_rad(float(args[yaw_idx + 1]))
+	var pitch_idx := args.find("--pitch")
+	if pitch_idx >= 0 and pitch_idx + 1 < args.size():
+		_camera._pitch = deg_to_rad(float(args[pitch_idx + 1]))
 	await get_tree().create_timer(3.0).timeout
 	var img: Image = get_viewport().get_texture().get_image()
 	img.save_png(out_path)
 	print("AUTO SCREENSHOT: " + out_path)
+	# 하늘 색 진단: 우측 청천 컬럼(x=0.78W)을 천정→지평선으로 샘플링 (sRGB 0–255)
+	var w: int = img.get_width()
+	var h: int = img.get_height()
+	var sx: int = int(w * 0.78)
+	for fy in [0.06, 0.14, 0.22, 0.30, 0.38, 0.44, 0.48]:
+		var py: int = int(h * fy)
+		var c: Color = img.get_pixel(sx, py)
+		print("PIXEL y=%.2f  rgb=(%3d,%3d,%3d)" % [fy, int(c.r*255.0), int(c.g*255.0), int(c.b*255.0)])
+	# 지평선 수평 스캔: 청천 픽셀(녹색 지면/나무 아닌 곳) 탐색용
+	var hrow: int = args.find("--scanrow")
+	var fyr: float = 0.50 if hrow < 0 or hrow + 1 >= args.size() else float(args[hrow + 1])
+	var pyr: int = int(h * fyr)
+	for fx in [0.40, 0.48, 0.56, 0.64, 0.72, 0.80, 0.88, 0.96]:
+		var pxr: int = int(w * fx)
+		var c2: Color = img.get_pixel(pxr, pyr)
+		print("HSCAN y=%.2f x=%.2f rgb=(%3d,%3d,%3d)" % [fyr, fx, int(c2.r*255.0), int(c2.g*255.0), int(c2.b*255.0)])
 	get_tree().quit()
 
 func _ui_init_dict() -> Dictionary:
