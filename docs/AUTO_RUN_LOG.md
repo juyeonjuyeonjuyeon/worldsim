@@ -251,9 +251,46 @@ blend = mix(sky_horizon, sky_top, pow(max(dir.y, 0.0), 1.0/0.15))
 
 ## 남은 작업
 
+---
+
+### [코드 정리·분리] Sky.gd god object 분리 (2026-06-29 세션 계속)
+
+사용자 요청 "코드 정리 그리고 분리". 분리 범위 = **데이터+정적 헬퍼만(저위험)** 선택.
+원칙: 동결 영역(노출·천문 산란) 로직은 **값/로직 변경 없이 이동만**. 한 목표=한 커밋.
+방식: class_name 전역 캐시 등록 타이밍 의존 회피 위해 **preload 상수** 사용(헤드리스 결정적).
+
+**검증 도구 정정:** 셸의 `godot` 미설치 → 이전 일부 컴파일 체크가 grep에 가려져 무효였음.
+이후 전부 `/Applications/Godot.app/Contents/MacOS/Godot` 절대경로로 파스+실제 앱 렌더 검수.
+
+#### [커밋 26ac5f4] refactor: 천체/별자리 카탈로그 → SkyData.gd
+- SHOWERS·COMETS·CONST_SEGS·CONST_LABELS·PLANETS·PLANET_KR·PLANET_COLORS 이동(순수 데이터)
+- Sky.gd 참조 23곳 → SkyData.X (BSD sed `[[:<:]]`/`[[:>:]]` 워드경계)
+- 검수: 파스 0오류, 정오 12:00 렌더 리팩터 전과 픽셀 동일
+
+#### [커밋 97b8484] refactor: 수학/물리 정적 헬퍼 → SkyMath.gd
+- _altaz_to_dir·_lerp_breakpoints·_star_spectral_color·_gen_bolt_segs·_day_of_year 이동
+- _sun_illuminance·_exposure_for_lux·_preetham_sky_colors(동결) **verbatim 이동**
+- STARLIGHT_FLOOR_LUX도 SkyMath로(노출 기준점)
+- _preetham_sky_colors는 셰이더 전환으로 미사용 → 삭제 대신 LOD-저 폴백용 보존(주석 명시)
+- 검수: 파스 0오류, 야간 23:00 렌더 정상(노출·별·행성·번개 경로 SkyMath 의존, 색감 동일)
+
+#### [커밋 fc9727e] refactor: _lerp_breakpoints 중복 제거
+- Sky.gd·Main.gd 동일 본문 중복 → SkyMath._lerp_breakpoints 단일화
+- Main.gd 호출부 5곳(강수 τ·계절 기온) 교체, 로컬 정의 삭제
+- 검수: 파스 0오류, 14:00 기온 31.2°C 정상 표시(보간 경로 작동)
+
+**결과:** Sky.gd 2298줄 → 약 1700줄. 동작 보존 확인(낮·밤·정오 3개 시각 렌더 동일).
+**사람 최종 확인 대기** — 실시간 시뮬에서 시간 흐름·날씨 전환 시 회귀 없는지 확인 권장.
+
+---
+
+## 남은 작업
+
 | 항목 | 우선순위 | 난이도 | 상태 |
 |------|---------|--------|------|
 | **이슈1·2·3 사람 최종 확인** | **최우선** | - | **사람 확인 대기** |
+| **Sky.gd 분리 사람 확인(실시간 회귀)** | 높음 | - | **사람 확인 대기** |
+| 하위 시스템 분리(유성·혜성·오로라 등) | 중 | 중 | 보류(저위험 범위 선택됨) |
 | 일식/월식 | 3순위 | 상 | 동결영역 — 아침 수동 작업 |
 | 이슬 (Dew) | 4순위 | 중 | Phase 3 (지면 텍스처) |
 | 먼지 회오리 | 4순위 | 중 | Phase 3 (파티클) |
