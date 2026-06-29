@@ -150,6 +150,18 @@ func _maybe_auto_screenshot() -> void:
 	var hum_idx := args.find("--humidity")
 	if hum_idx >= 0 and hum_idx + 1 < args.size():
 		hum_force = float(args[hum_idx + 1])
+	var wx_idx := args.find("--weather")
+	if wx_idx >= 0 and wx_idx + 1 < args.size():
+		weather_type = args[wx_idx + 1]
+		rain_rate = 15.0
+	if args.has("--force-rainbow"):
+		_sky.force_rainbow(true)
+	if args.has("--constellations"):
+		show_constellations = true
+		show_trails = true
+	var camy_idx := args.find("--camy")
+	if camy_idx >= 0 and camy_idx + 1 < args.size():
+		_camera.get_camera().position = Vector3(8.0, float(args[camy_idx + 1]), 16.0)
 	var fixed_time: float = -999.0
 	var time_idx := args.find("--time")
 	if time_idx >= 0 and time_idx + 1 < args.size():
