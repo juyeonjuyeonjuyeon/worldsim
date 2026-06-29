@@ -3,158 +3,9 @@ extends Node
 
 const STARLIGHT_FLOOR_LUX: float = 0.0008
 
-# 유성우 — [피크 월, 피크 일, 복사점 RA°, 복사점 Dec°, 피크 ZHR, 활동 반폭(일)]
-const SHOWERS: Array = [
-	[1,  3, 230.1,  49.0, 120, 2],   # 사분의자리   Quadrantids
-	[4, 22, 271.4,  33.6,  18, 3],   # 거문고자리   Lyrids
-	[5,  6, 338.0,  -1.0,  50, 5],   # 물병자리η    Eta Aquariids
-	[7, 29, 339.0,  -5.0,  20, 4],   # 물병자리δ    Delta Aquariids
-	[8, 12,  46.4,  58.3, 100, 6],   # 페르세우스자리★ Perseids
-	[10,21,  95.0,  15.8,  20, 5],   # 오리온자리   Orionids
-	[11,17, 152.3,  21.6,  15, 3],   # 사자자리     Leonids
-	[12,14, 112.3,  32.5, 120, 4],   # 쌍둥이자리 ★ Geminids
-	[12,22, 102.6,  82.0,  10, 3],   # 작은곰자리   Ursids
-]
-# 혜성 RA/Dec 키프레임 — [[yr,mo,day,RA°,Dec°,mag], ...]
-# 가시 기간(최초~최후 키프레임) + 등급 ≤ 5.5 일 때만 표시
-const COMETS: Array = [
-	["Hale-Bopp", [
-		[1997, 1,  1, 334.0, -1.0, 3.0],
-		[1997, 3,  1,   3.8, 35.0, 1.0],
-		[1997, 4,  1,  37.5, 56.0, 0.0],
-		[1997, 5,  1,  60.0, 64.0, 1.5],
-		[1997, 7,  1,  82.5, 62.0, 3.5],
-	]],
-	["Neowise", [
-		[2020, 7,  5,  80.0, 33.0, 0.0],
-		[2020, 7, 14,  70.5, 36.0, 1.5],
-		[2020, 7, 22,  63.0, 44.0, 2.5],
-		[2020, 8,  1,  58.0, 51.0, 3.5],
-		[2020, 8, 10,  55.0, 56.0, 5.0],
-	]],
-]
-
-# 별자리 선분 [ra1°, dec1°, ra2°, dec2°] — J2000.0 좌표
-const CONST_SEGS: Array = [
-	# 큰곰자리 (Ursa Major / Big Dipper)
-	[165.93,61.75,165.46,56.38],[165.46,56.38,178.46,53.69],
-	[178.46,53.69,183.86,57.03],[183.86,57.03,165.93,61.75],
-	[183.86,57.03,193.51,55.96],[193.51,55.96,200.98,54.93],[200.98,54.93,206.89,49.31],
-	# 작은곰자리 (Ursa Minor / Little Dipper)
-	[37.95,89.26,263.05,86.59],[263.05,86.59,251.49,82.04],
-	[251.49,82.04,236.02,77.79],[236.02,77.79,244.38,75.76],
-	[244.38,75.76,222.68,74.16],[222.68,74.16,230.18,71.83],[230.18,71.83,244.38,75.76],
-	# 카시오페이아 (Cassiopeia, W)
-	[28.60,63.67,21.45,60.24],[21.45,60.24,14.18,60.72],
-	[14.18,60.72,10.13,56.54],[10.13,56.54,2.29,59.15],
-	# 페르세우스 (Perseus)
-	[51.08,49.86,49.80,53.50],[51.08,49.86,51.79,47.71],
-	[51.79,47.71,57.85,40.01],[57.85,40.01,58.53,31.88],
-	[51.08,49.86,42.68,55.90],[51.08,49.86,47.04,40.96],
-	# 마차부자리 (Auriga)
-	[79.17,45.99,89.88,44.95],[89.88,44.95,90.18,37.21],
-	[90.18,37.21,74.25,33.17],[74.25,33.17,75.49,43.82],[75.49,43.82,79.17,45.99],
-	# 오리온자리 (Orion) ★
-	[83.78,9.93,88.79,7.41],[83.78,9.93,81.28,6.35],
-	[88.79,7.41,84.05,-1.20],[81.28,6.35,83.00,-0.30],
-	[83.00,-0.30,84.05,-1.20],[84.05,-1.20,85.19,-1.94],
-	[85.19,-1.94,86.94,-9.67],[86.94,-9.67,78.63,-8.20],[83.00,-0.30,78.63,-8.20],
-	# 황소자리 (Taurus)
-	[68.98,16.51,81.57,28.61],[68.98,16.51,84.41,21.14],
-	[68.98,16.51,65.73,17.54],[65.73,17.54,56.87,24.11],
-	# 쌍둥이자리 (Gemini)
-	[113.65,31.89,116.33,28.03],[113.65,31.89,100.98,25.13],
-	[100.98,25.13,92.61,22.51],[116.33,28.03,110.03,21.98],
-	[110.03,21.98,105.45,20.57],[105.45,20.57,92.61,22.51],[92.61,22.51,99.43,16.40],
-	# 큰개자리 (Canis Major, Sirius)
-	[101.29,-16.72,95.68,-17.96],[101.29,-16.72,104.66,-28.97],
-	[104.66,-28.97,107.10,-26.39],[107.10,-26.39,111.02,-29.30],
-	# 사자자리 (Leo)
-	[152.09,11.97,152.65,16.76],[152.65,16.76,154.99,19.84],
-	[154.99,19.84,154.17,23.42],[154.17,23.42,146.46,23.77],
-	[152.09,11.97,168.56,15.43],[168.56,15.43,177.26,14.57],
-	[168.53,20.52,168.56,15.43],[168.53,20.52,154.99,19.84],
-	# 처녀자리 (Virgo)
-	[201.30,-11.16,204.97,-0.60],[204.97,-0.60,190.41,-1.45],
-	[190.41,-1.45,177.67,1.76],[190.41,-1.45,186.74,-0.66],
-	[186.74,-0.66,193.90,3.40],[193.90,3.40,195.54,10.96],
-	# 목동자리 (Boötes, Arcturus)
-	[213.92,19.18,208.67,18.40],[213.92,19.18,221.25,27.07],
-	[221.25,27.07,214.68,38.31],[214.68,38.31,218.02,40.39],
-	[218.02,40.39,221.25,33.31],[221.25,33.31,221.25,27.07],
-	# 헤르쿨레스 (Hercules, Keystone)
-	[247.55,21.49,246.36,19.15],[246.36,19.15,248.49,24.84],
-	[248.49,24.84,253.32,30.93],[253.32,30.93,250.73,31.60],
-	[250.73,31.60,250.19,38.92],[250.19,38.92,255.08,36.81],
-	[255.08,36.81,253.32,30.93],[247.55,21.49,248.49,24.84],
-	# 전갈자리 (Scorpius) ★
-	[238.85,-26.11,240.08,-22.62],[240.08,-22.62,241.36,-19.81],
-	[240.08,-22.62,245.30,-25.59],[245.30,-25.59,247.35,-26.43],
-	[247.35,-26.43,247.55,-28.22],[247.55,-28.22,252.54,-34.29],
-	[252.54,-34.29,253.08,-38.05],[253.08,-38.05,253.08,-42.36],
-	[253.08,-42.36,254.03,-43.24],[254.03,-43.24,263.40,-37.10],
-	[263.40,-37.10,265.62,-39.03],[263.40,-37.10,264.33,-43.00],
-	# 궁수자리 (Sagittarius, Teapot)
-	[271.45,-25.42,275.25,-29.83],[275.25,-29.83,276.99,-34.38],
-	[276.99,-34.38,285.66,-29.88],[285.66,-29.88,283.82,-26.30],
-	[283.82,-26.30,290.97,-27.67],[271.45,-25.42,271.45,-30.42],
-	[271.45,-30.42,275.25,-29.83],[283.82,-26.30,271.45,-25.42],
-	# 거문고자리 (Lyra, Vega)
-	[279.23,38.78,282.52,33.36],[279.23,38.78,284.74,32.69],
-	[282.52,33.36,284.74,32.69],[281.20,36.90,282.52,33.36],[281.20,36.90,279.23,38.78],
-	# 백조자리 (Cygnus, Northern Cross)
-	[310.36,45.28,305.56,40.26],[305.56,40.26,292.68,27.96],
-	[299.08,45.13,305.56,40.26],[305.56,40.26,311.55,33.97],
-	# 독수리자리 (Aquila, Altair)
-	[296.56,10.61,297.70,8.87],[297.70,8.87,298.83,6.41],
-	[286.35,13.86,296.56,10.61],[297.70,8.87,296.10,3.11],[296.10,3.11,296.67,-4.88],
-	# 페가수스 (Pegasus, Great Square)
-	[346.19,28.08,346.19,15.18],[346.19,15.18,3.31,15.18],
-	[3.31,15.18,2.10,29.09],[2.10,29.09,346.19,28.08],
-	[346.19,28.08,335.56,33.17],[346.19,15.18,323.49,9.83],
-	# 남십자성 (Crux, Southern Cross) ★ — 적위 -57°~-63°, 남위 25°N 이남에서 관측
-	# α Cru(Acrux)↔γ Cru(Gacrux) 세로축, β Cru(Mimosa)↔δ Cru 가로축
-	[187.791,-57.113,186.650,-63.099],   # γ Cru → α Cru (세로)
-	[191.930,-59.689,183.786,-58.749],   # β Cru → δ Cru (가로)
-	# 켄타우루스 (Centaurus) — 포인터 별 α·β Cen 이 남십자성을 가리킴
-	[219.919,-60.835,210.956,-60.373],   # α Cen → β Cen (포인터 선분)
-	[210.956,-60.373,204.972,-53.466],   # β Cen → ε Cen
-	[204.972,-53.466,190.379,-48.960],   # ε Cen → γ Cen
-	[204.972,-53.466,218.877,-42.158],   # ε Cen → η Cen
-	[218.877,-42.158,219.919,-60.835],   # η Cen → α Cen
-	# 용골자리 (Carina) — 남쪽 하늘의 밝은 별 카노푸스(α Car) 포함
-	[95.988,-52.696,125.629,-59.509],    # α Car(Canopus) → ε Car(Avior)
-	[125.629,-59.509,139.274,-59.275],   # ε Car → ι Car
-	[139.274,-59.275,138.301,-69.717],   # ι Car → β Car(Miaplacidus)
-	# 에리다누스 남부 (Eridanus south) — 포말하우트 근처까지 이어지는 긴 강
-	[24.429,-57.237,29.692,-61.400],     # α Eri(Achernar) → β Eri
-]
-
-# 별자리 이름 레이블 [한국명, RA°, Dec°] — CONST_SEGS 각 별자리의 대표점
-const CONST_LABELS: Array = [
-	["큰곰자리",    185.0,  55.0],
-	["작은곰자리",  245.0,  78.0],
-	["카시오페이아",  14.0,  61.0],
-	["페르세우스",   51.0,  44.0],
-	["마차부자리",   82.0,  41.0],
-	["오리온자리",   83.0,   1.0],
-	["황소자리",     70.0,  20.0],
-	["쌍둥이자리",  107.0,  25.0],
-	["큰개자리",    103.0, -22.0],
-	["사자자리",    163.0,  17.0],
-	["처녀자리",    190.0,   2.0],
-	["목동자리",    217.0,  28.0],
-	["헤르쿨레스",  251.0,  26.0],
-	["전갈자리",    252.0, -30.0],
-	["궁수자리",    279.0, -28.0],
-	["거문고자리",  281.0,  37.0],
-	["백조자리",    305.0,  42.0],
-	["독수리자리",  296.0,   8.0],
-	["페가수스",    346.0,  22.0],
-	["남십자성",    187.0, -60.0],
-	["켄타우루스",  212.0, -55.0],
-	["용골자리",    120.0, -57.0],
-]
+# 천체/별자리 정적 카탈로그(유성우·혜성·별자리 선분/레이블·행성)는
+# SkyData.gd로 분리(2026-06-29). SkyData.X 로 참조.
+const SkyData = preload("res://SkyData.gd")
 
 # 외부에서 읽는 출력값
 var sky_brightness_safe: float     = 1.0
@@ -510,21 +361,7 @@ void fragment() {
 	add_child(_stars_mm)
 
 ## 행성 순서(인덱스 고정): 수성0 금성1 화성2 목성3 토성4 천왕성5 해왕성6
-const PLANETS: Array = ["mercury","venus","mars","jupiter","saturn","uranus","neptune"]
-const PLANET_KR: Dictionary = {
-	"mercury": "수성", "venus": "금성", "mars": "화성",
-	"jupiter": "목성", "saturn": "토성", "uranus": "천왕성", "neptune": "해왕성"
-}
-## 행성별 고유 색 (RGB) — 실제 반사 스펙트럼 기반
-const PLANET_COLORS: Array = [
-	Color(0.88, 0.83, 0.80),   # 수성 — 회백
-	Color(1.00, 0.97, 0.88),   # 금성 — 따뜻한 흰
-	Color(1.00, 0.60, 0.40),   # 화성 — 주황적
-	Color(0.97, 0.92, 0.80),   # 목성 — 연한 황백
-	Color(1.00, 0.93, 0.68),   # 토성 — 황금
-	Color(0.68, 0.92, 1.00),   # 천왕성 — 청록
-	Color(0.40, 0.60, 1.00),   # 해왕성 — 파랑
-]
+# 행성 카탈로그(영문키·한글명·색)는 SkyData.gd로 분리. SkyData 네임스페이스로 참조.
 
 func _build_planets() -> void:
 	_planet_mm = MultiMeshInstance3D.new()
@@ -535,9 +372,9 @@ func _build_planets() -> void:
 	var quad := QuadMesh.new()
 	quad.size = Vector2(1.0, 1.0)
 	mm.mesh = quad
-	mm.instance_count = PLANETS.size()
-	for idx in range(PLANETS.size()):
-		mm.set_instance_color(idx, Color(PLANET_COLORS[idx].r, PLANET_COLORS[idx].g, PLANET_COLORS[idx].b, 0.0))
+	mm.instance_count = SkyData.PLANETS.size()
+	for idx in range(SkyData.PLANETS.size()):
+		mm.set_instance_color(idx, Color(SkyData.PLANET_COLORS[idx].r, SkyData.PLANET_COLORS[idx].g, SkyData.PLANET_COLORS[idx].b, 0.0))
 		mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
 	_planet_mm.multimesh = mm
 	# 별과 동일한 가우시안 PSF 셰이더 재사용
@@ -601,7 +438,7 @@ void fragment() {
 	_const_mesh_inst.visible = false
 	add_child(_const_mesh_inst)
 	# 별자리 이름 Label3D — 빌보드, 처음엔 숨겨둠
-	for lbl_data in CONST_LABELS:
+	for lbl_data in SkyData.CONST_LABELS:
 		var lbl := Label3D.new()
 		lbl.text              = lbl_data[0]
 		lbl.font_size         = 18
@@ -1371,21 +1208,21 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 	var radius: float = 398.0  # 별(400)보다 약간 앞에 — 행성이 별 앞에 겹쳐 그려짐
 	# 모든 행성 상태를 미리 계산 (합/충 감지용)
 	var all_states: Array = []
-	for idx in range(PLANETS.size()):
-		var pname: String = PLANETS[idx]
+	for idx in range(SkyData.PLANETS.size()):
+		var pname: String = SkyData.PLANETS[idx]
 		var ps: Dictionary = Astronomy.planet_state(pname, dt["year"], dt["month"], dt["day"], hour_utc, latitude, longitude)
 		all_states.append(ps)
 	if not venus_visible and not others_visible:
 		psmat.set_shader_parameter("global_brightness", 0.0)
-		for idx in range(PLANETS.size()):
-			var pc: Color = PLANET_COLORS[idx]
+		for idx in range(SkyData.PLANETS.size()):
+			var pc: Color = SkyData.PLANET_COLORS[idx]
 			mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
 			mm.set_instance_transform(idx, Transform3D(Basis(), Vector3(0.0, -2000.0, 0.0)))
 	else:
 		psmat.set_shader_parameter("global_brightness", 4.0 * max(0.0, 1.0 - cloud_block))
-		for idx in range(PLANETS.size()):
-			var pname: String = PLANETS[idx]
-			var pc: Color = PLANET_COLORS[idx]
+		for idx in range(SkyData.PLANETS.size()):
+			var pname: String = SkyData.PLANETS[idx]
+			var pc: Color = SkyData.PLANET_COLORS[idx]
 			var ps: Dictionary = all_states[idx]
 			if ps.is_empty():
 				mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, 0.0))
@@ -1408,7 +1245,7 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 			var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 0.80)
 			mm.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3(scale_, scale_, scale_)), dir * radius))
 	# ── 토성 고리 3D 방향 정렬 ───────────────────────────────────────────
-	# PLANETS 배열에서 saturn = index 4
+	# SkyData.PLANETS 배열에서 saturn = index 4
 	var sat_ps: Dictionary = all_states[4]
 	if sat_ps.is_empty() or sun_elev > 3.0 or (sat_ps["alt"] as float) < -5.0:
 		_saturn_ring_mat.set_shader_parameter("intensity", 0.0)
@@ -1439,10 +1276,10 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 	# ── 행성 합/충 감지 ────────────────────────────────────────────────
 	var events: PackedStringArray = []
 	var vis_states: Array = []   # 지평선 위(-10°)에 있는 행성만
-	for idx in range(PLANETS.size()):
+	for idx in range(SkyData.PLANETS.size()):
 		var ps: Dictionary = all_states[idx]
 		if not ps.is_empty() and (ps["alt"] as float) > -10.0:
-			vis_states.append({"name": PLANETS[idx], "alt": ps["alt"], "az": ps["az"]})
+			vis_states.append({"name": SkyData.PLANETS[idx], "alt": ps["alt"], "az": ps["az"]})
 	# 행성-행성 합 (각거리 < 1.5°)
 	for i in range(vis_states.size()):
 		for j in range(i + 1, vis_states.size()):
@@ -1453,7 +1290,7 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 				  * cos(deg_to_rad(pi["az"] - pj["az"])))
 			var sep: float = rad_to_deg(acos(clampf(cos_sep, -1.0, 1.0)))
 			if sep < 1.5:
-				events.append("%s·%s 합 (%.1f°)" % [PLANET_KR[pi["name"]], PLANET_KR[pj["name"]], sep])
+				events.append("%s·%s 합 (%.1f°)" % [SkyData.PLANET_KR[pi["name"]], SkyData.PLANET_KR[pj["name"]], sep])
 	# 태양-행성 이각 (충/합)
 	var sun_alt: float = sun_altaz.x
 	var sun_az: float  = sun_altaz.y
@@ -1463,9 +1300,9 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 			  * cos(deg_to_rad((pd["az"] as float) - sun_az)))
 		var elong: float = rad_to_deg(acos(clampf(cos_el, -1.0, 1.0)))
 		if elong > 170.0:
-			events.append("%s 충" % PLANET_KR[pd["name"]])
+			events.append("%s 충" % SkyData.PLANET_KR[pd["name"]])
 		elif elong < 3.0:
-			events.append("%s 합" % PLANET_KR[pd["name"]])
+			events.append("%s 합" % SkyData.PLANET_KR[pd["name"]])
 	planet_events = "  ".join(events)
 
 func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
@@ -1488,7 +1325,7 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 	var radius: float = 395.0  # 별(400)보다 살짝 안쪽
 	_const_mesh.clear_surfaces()
 	_const_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	for seg in CONST_SEGS:
+	for seg in SkyData.CONST_SEGS:
 		var p1: Vector2 = Astronomy.precess_radec(seg[0], seg[1], P)
 		var p2: Vector2 = Astronomy.precess_radec(seg[2], seg[3], P)
 		var a1: Vector2 = Astronomy.radec_to_altaz(p1.x, p1.y, g, latitude, longitude)
@@ -1502,7 +1339,7 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 	var cam_pos: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
 	for i in range(_const_label_nodes.size()):
 		var lbl: Label3D = _const_label_nodes[i] as Label3D
-		var ld: Array    = CONST_LABELS[i]
+		var ld: Array    = SkyData.CONST_LABELS[i]
 		var pc: Vector2  = Astronomy.precess_radec(ld[1] as float, ld[2] as float, P)
 		var ac: Vector2  = Astronomy.radec_to_altaz(pc.x, pc.y, g, latitude, longitude)
 		var dir: Vector3 = _altaz_to_dir(ac.x, ac.y)
@@ -1755,7 +1592,7 @@ func _update_meteor(sun_altaz: Vector2, cloud_props: Dictionary, dt: Dictionary,
 func _get_shower_state(dt: Dictionary, gmst: float, lat: float, lon: float) -> Array:
 	var best_i: float   = 0.0
 	var best_r: Vector3 = Vector3.UP
-	for sh in SHOWERS:
+	for sh in SkyData.SHOWERS:
 		var pm: int   = sh[0]; var pd: int   = sh[1]
 		var ra: float = sh[2]; var dec: float = sh[3]
 		var zhr: int  = sh[4]; var hw: int   = sh[5]
@@ -1936,7 +1773,7 @@ func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude
 	var comet_ra:   float = 0.0
 	var comet_dec:  float = 0.0
 	var comet_mag:  float = 10.0
-	for comet in COMETS:
+	for comet in SkyData.COMETS:
 		var frames: Array = comet[1]
 		if frames.size() < 2:
 			continue
