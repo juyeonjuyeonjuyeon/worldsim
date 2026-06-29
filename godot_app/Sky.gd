@@ -1268,15 +1268,25 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 
 	# ── 하늘 색: Preetham(1999) 대기 산란 모델 + 야간 블렌드 ──────────────
 	# Layer A (elevation ≥ −2°): Preetham 분석 모델 — 손으로 색 지정 없음
-	# Layer B (elevation < −6°): 기존 야간 고정 색 유지 (night_top / night_horizon)
-	# 혼합구간 (−2° ∼ −6°): A → B 선형 보간
-	# maxf(elevation, -6.0): 태양 -6° 이하는 어차피 야간색으로 전환 완료이므로 의미 없음.
-	# 이전 maxf(elevation, 0.0)은 박명(-6°~0°) 전 구간을 ts=90°(일몰 최대 붉음)로 고정해
-	# 일몰 직후에도 붉음이 잔류하는 문제 원인이었음. -6.0으로 변경해 박명을 자연스럽게 반영.
+	# Layer B (elevation < −10°): 야간 고정 색 (night_top / night_horizon)
+	# 혼합구간 (−2° ∼ −10°, 8°): smoothstep 가중치 + log 공간 채널 보간
+	# 이유: 선형 lerp는 Preetham 오렌지(~1.4)↔야간 암색(~0.003) 560:1 비율을 인지상 급변으로 보여줌.
+	# log 보간 → 각 채널이 지수적으로 감쇠(매 단위 t마다 일정 비율 감소) → 지각 균등 전환.
+	# B채널 eps=1e-5: Preetham 일몰 B=0 처리 (log(0) 방지).
 	var hw_colors := _preetham_sky_colors(maxf(elevation, -6.0), 3.0)
-	var _dtn_t := clampf((-elevation - 2.0) / 4.0, 0.0, 1.0)
-	var top    : Color = (hw_colors[0] as Color).lerp(night_top,    _dtn_t)
-	var horizon: Color = (hw_colors[1] as Color).lerp(night_horizon, _dtn_t)
+	var _dtn_raw := clampf((-elevation - 2.0) / 8.0, 0.0, 1.0)
+	var _dtn_t   := _dtn_raw * _dtn_raw * (3.0 - 2.0 * _dtn_raw)  # smoothstep
+	var hw_t := hw_colors[0] as Color
+	var hw_h := hw_colors[1] as Color
+	var _eps := 1e-5
+	var top := Color(
+		exp(lerpf(log(maxf(hw_t.r, _eps)), log(maxf(night_top.r,     _eps)), _dtn_t)),
+		exp(lerpf(log(maxf(hw_t.g, _eps)), log(maxf(night_top.g,     _eps)), _dtn_t)),
+		exp(lerpf(log(maxf(hw_t.b, _eps)), log(maxf(night_top.b,     _eps)), _dtn_t)))
+	var horizon := Color(
+		exp(lerpf(log(maxf(hw_h.r, _eps)), log(maxf(night_horizon.r, _eps)), _dtn_t)),
+		exp(lerpf(log(maxf(hw_h.g, _eps)), log(maxf(night_horizon.g, _eps)), _dtn_t)),
+		exp(lerpf(log(maxf(hw_h.b, _eps)), log(maxf(night_horizon.b, _eps)), _dtn_t)))
 
 	# 날씨 전환 시 tau를 부드럽게 보간 — 점프 없이 흐린날→맑음 or 역방향 전환
 	# lerpf weight ≈ delta×0.3: 60fps에서 τ≈3s, 빠른 전환도 끊김 없이 반영
