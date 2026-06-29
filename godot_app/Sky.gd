@@ -1,11 +1,11 @@
 class_name WorldSimSky
 extends Node
 
-const STARLIGHT_FLOOR_LUX: float = 0.0008
-
-# 천체/별자리 정적 카탈로그(유성우·혜성·별자리 선분/레이블·행성)는
-# SkyData.gd로 분리(2026-06-29). SkyData.X 로 참조.
+# 데이터·헬퍼 모듈 분리(2026-06-29):
+#  SkyData — 천체/별자리 정적 카탈로그(유성우·혜성·별자리 선분/레이블·행성)
+#  SkyMath — 순수 수학/물리 정적 헬퍼 + SkyMath.STARLIGHT_FLOOR_LUX(별빛 조도 하한)
 const SkyData = preload("res://SkyData.gd")
+const SkyMath = preload("res://SkyMath.gd")
 
 # 외부에서 읽는 출력값
 var sky_brightness_safe: float     = 1.0
@@ -111,7 +111,7 @@ func trigger_meteor(shower_mode: bool = false) -> void:
 	if shower_mode:
 		_shower_intensity = 0.80
 		# 페르세우스자리 복사점 근사 (alt≈58°, az≈46°)
-		_shower_radiant   = _altaz_to_dir(58.0, 46.0)
+		_shower_radiant   = SkyMath._altaz_to_dir(58.0, 46.0)
 	else:
 		_shower_intensity = 0.0
 	_spawn_meteor()
@@ -802,7 +802,7 @@ func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictiona
 	var cam_origin: Vector3 = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
 	_rainbow_mesh.global_position = cam_origin
 
-	var sun_dir: Vector3 = _altaz_to_dir(sun_altaz.x, sun_altaz.y)
+	var sun_dir: Vector3 = SkyMath._altaz_to_dir(sun_altaz.x, sun_altaz.y)
 	_rainbow_mat.set_shader_parameter("sun_dir", sun_dir)
 
 	var rain_rate_cur: float = cloud_props.get("rain_rate", 0.0)
@@ -863,7 +863,7 @@ func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictiona
 	var sun_below  := clampf((-sun_altaz.x - 5.0) / 10.0, 0.0, 1.0)  # 태양이 −5°이하
 	var moon_bright := clampf((moon_illum_v - 0.25) / 0.75, 0.0, 1.0)  # 반달 이상만
 	var target_mb  := moon_ef * droplet_air * moon_bright * sun_below * 0.04
-	_moonbow_mat.set_shader_parameter("sun_dir", _altaz_to_dir(moon_elev, moon_az_v))
+	_moonbow_mat.set_shader_parameter("sun_dir", SkyMath._altaz_to_dir(moon_elev, moon_az_v))
 	var spd_mb := 0.08 if target_mb > _moonbow_intensity else 0.04
 	_moonbow_intensity = lerpf(_moonbow_intensity, target_mb, delta * spd_mb)
 	_moonbow_mat.set_shader_parameter("intensity", _moonbow_intensity)
@@ -901,8 +901,8 @@ func _update_milkyway(dt: Dictionary, hour_utc: float, latitude: float, longitud
 		var center_pr:= Astronomy.precess_radec(266.405, -28.936, P)  # 은하 중심 J2000
 		var pole_az  := Astronomy.radec_to_altaz(pole_pr.x, pole_pr.y, gmst, latitude, longitude)
 		var center_az:= Astronomy.radec_to_altaz(center_pr.x, center_pr.y, gmst, latitude, longitude)
-		_milkyway_mat.set_shader_parameter("gal_pole",   _altaz_to_dir(pole_az.x,   pole_az.y))
-		_milkyway_mat.set_shader_parameter("gal_center", _altaz_to_dir(center_az.x, center_az.y))
+		_milkyway_mat.set_shader_parameter("gal_pole",   SkyMath._altaz_to_dir(pole_az.x,   pole_az.y))
+		_milkyway_mat.set_shader_parameter("gal_center", SkyMath._altaz_to_dir(center_az.x, center_az.y))
 	_milkyway_mat.set_shader_parameter("intensity", _milkyway_intensity)
 	_milkyway_mesh.visible = _milkyway_intensity > 0.001
 
@@ -918,7 +918,7 @@ func _update_zodiacal_light(sun_altaz: Vector2, cloud_props: Dictionary, delta: 
 	var spd_zl := 0.05 if target_zl > _zodiac_intensity else 0.08
 	_zodiac_intensity = lerpf(_zodiac_intensity, target_zl, delta * spd_zl)
 	# 태양의 지평선 아래 실제 방향 (고도 그대로 전달 — 지평선 아래여도 OK)
-	_zodiac_mat.set_shader_parameter("sun_dir", _altaz_to_dir(sun_elev, sun_altaz.y))
+	_zodiac_mat.set_shader_parameter("sun_dir", SkyMath._altaz_to_dir(sun_elev, sun_altaz.y))
 	_zodiac_mat.set_shader_parameter("intensity", _zodiac_intensity)
 	_zodiac_mesh.visible = _zodiac_intensity > 0.001
 
@@ -968,7 +968,7 @@ func _update_fog(weather_type: String, rain_rate: float, temperature: float, win
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
 	var elevation: float = sun_altaz.x
 	var azimuth: float   = sun_altaz.y
-	var sun_dir: Vector3 = _altaz_to_dir(elevation, azimuth)
+	var sun_dir: Vector3 = SkyMath._altaz_to_dir(elevation, azimuth)
 	_sun_light.global_transform = Transform3D(Basis.looking_at(-sun_dir, Vector3.UP), Vector3.ZERO)
 
 	# 카메라 위치 — 태양/달 메시를 카메라 기준으로 배치하여 ProceduralSky glow와 정렬
@@ -978,7 +978,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var moon_alt: float   = moon["alt"]
 	var moon_az: float    = moon["az"]
 	var moon_illum: float = moon["illum"]
-	var moon_dir: Vector3 = _altaz_to_dir(moon_alt, moon_az)
+	var moon_dir: Vector3 = SkyMath._altaz_to_dir(moon_alt, moon_az)
 	_moon_light.global_transform = Transform3D(Basis.looking_at(-moon_dir, Vector3.UP), Vector3.ZERO)
 	_moon_mesh.global_position = cam_origin + moon_dir * 100.0
 	# 달 지평선 페이드: −3°→+1° smoothstep, 위치 계산은 그대로, 가시성만 조절
@@ -1034,15 +1034,15 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_prev_sun_elev = elevation
 	_sun_shader_mat.set_shader_parameter("green_flash", _green_flash_t)
 
-	var sun_lux: float  = _sun_illuminance(elevation)
+	var sun_lux: float  = SkyMath._sun_illuminance(elevation)
 	var moon_lux: float = 0.0
 	if moon_alt > 0.0:
 		# 반대현상(opposition effect) + 위상 비선형성:
 		# pow(2.5) → 반달=0.048 lux(실제 0.02–0.05), 초승(25%)=0.008 lux(실제 0.005–0.01)
 		moon_lux = 0.27 * pow(moon_illum, 2.5) * sin(deg_to_rad(moon_alt))
-	var total_lux: float = sun_lux + moon_lux + STARLIGHT_FLOOR_LUX
+	var total_lux: float = sun_lux + moon_lux + SkyMath.STARLIGHT_FLOOR_LUX
 
-	var exposure_ev: float = _exposure_for_lux(total_lux)
+	var exposure_ev: float = SkyMath._exposure_for_lux(total_lux)
 	if lightning_flash > 0.01:
 		exposure_ev = lerp(exposure_ev, 0.0, lightning_flash)
 	# FP16 HDR 버퍼 최솟값(6e-5) 대비 tonemap 보정 상한 = 2^4 = 16×
@@ -1185,12 +1185,12 @@ func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: 
 		# 포그손 밝기 × 박명 가시도 → instance color.a 에 인코딩
 		var pogson_b: float = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
 		# 분광색 조회는 J2000 좌표 그대로 사용 (테이블이 J2000 기준)
-		var sc: Color = _star_spectral_color(star["ra"], star["dec"])
+		var sc: Color = SkyMath._star_spectral_color(star["ra"], star["dec"])
 		mm.set_instance_color(i, Color(sc.r, sc.g, sc.b, pogson_b * twilight))
 		# 세차 보정 후 고도/방위각 계산
 		var pr: Vector2    = Astronomy.precess_radec(star["ra"], star["dec"], P)
 		var altaz: Vector2 = Astronomy.radec_to_altaz(pr.x, pr.y, g, latitude, longitude)
-		var dir: Vector3   = _altaz_to_dir(altaz.x, altaz.y)
+		var dir: Vector3   = SkyMath._altaz_to_dir(altaz.x, altaz.y)
 		# 포그손 법칙 기반 로그 크기: 5등급차 = 100배 밝기, 크기는 밝기의 0.18승에 비례
 		# 포그손 법칙 기반 시각 크기: 밝기 ∝ 10^(-0.4·mag), 크기 ∝ 밝기^0.5 = 10^(-0.20·mag)
 		var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 3.0)
@@ -1239,7 +1239,7 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 			var twilight: float    = clampf((sun_elev - appear_elev - 2.0) / -2.0, 0.0, 1.0)
 			var pogson_b: float    = clampf(pow(10.0, -mag * 0.40), 0.0, 1.0)
 			mm.set_instance_color(idx, Color(pc.r, pc.g, pc.b, pogson_b * twilight))
-			var dir: Vector3   = _altaz_to_dir(ps["alt"], ps["az"])
+			var dir: Vector3   = SkyMath._altaz_to_dir(ps["alt"], ps["az"])
 			# 행성은 각지름이 거의 0 → 점(point)으로 렌더; 최대 0.80m @ 400m = 0.11°
 			# 달 디스크(0.52°)보다 훨씬 작게 유지
 			var scale_: float  = clampf(0.45 * pow(10.0, -0.20 * mag), 0.10, 0.80)
@@ -1251,14 +1251,14 @@ func _update_planets(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitu
 		_saturn_ring_mat.set_shader_parameter("intensity", 0.0)
 		_saturn_ring_inst.visible = false
 	else:
-		var sat_dir: Vector3 = _altaz_to_dir(sat_ps["alt"], sat_ps["az"])
+		var sat_dir: Vector3 = SkyMath._altaz_to_dir(sat_ps["alt"], sat_ps["az"])
 		# 토성 자전 극 (J2000 RA=40.589°, Dec=83.537°) → 현재 에포크 세차 → AltAz
 		var jd_s: float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 		var gst_s: float = Astronomy.gmst_deg(jd_s)
 		var P_s: Basis   = Astronomy.precession_matrix(jd_s)
 		var pp: Vector2  = Astronomy.precess_radec(40.589, 83.537, P_s)
 		var pole_az: Vector2 = Astronomy.radec_to_altaz(pp.x, pp.y, gst_s, latitude, longitude)
-		var pole_dir: Vector3 = _altaz_to_dir(pole_az.x, pole_az.y)
+		var pole_dir: Vector3 = SkyMath._altaz_to_dir(pole_az.x, pole_az.y)
 		# ring disc: normal = pole_dir (고리면의 수직)
 		# PlaneMesh Y축 → pole_dir 방향으로 정렬하는 Basis 생성
 		var y_ax: Vector3 = pole_dir
@@ -1330,8 +1330,8 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 		var p2: Vector2 = Astronomy.precess_radec(seg[2], seg[3], P)
 		var a1: Vector2 = Astronomy.radec_to_altaz(p1.x, p1.y, g, latitude, longitude)
 		var a2: Vector2 = Astronomy.radec_to_altaz(p2.x, p2.y, g, latitude, longitude)
-		_const_mesh.surface_add_vertex(_altaz_to_dir(a1.x, a1.y) * radius)
-		_const_mesh.surface_add_vertex(_altaz_to_dir(a2.x, a2.y) * radius)
+		_const_mesh.surface_add_vertex(SkyMath._altaz_to_dir(a1.x, a1.y) * radius)
+		_const_mesh.surface_add_vertex(SkyMath._altaz_to_dir(a2.x, a2.y) * radius)
 	_const_mesh.surface_end()
 	# 별자리 이름 레이블 위치 업데이트
 	var lbl_alpha: float = clampf(star_vis * 0.70, 0.0, 0.70)
@@ -1342,7 +1342,7 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 		var ld: Array    = SkyData.CONST_LABELS[i]
 		var pc: Vector2  = Astronomy.precess_radec(ld[1] as float, ld[2] as float, P)
 		var ac: Vector2  = Astronomy.radec_to_altaz(pc.x, pc.y, g, latitude, longitude)
-		var dir: Vector3 = _altaz_to_dir(ac.x, ac.y)
+		var dir: Vector3 = SkyMath._altaz_to_dir(ac.x, ac.y)
 		lbl.global_position = cam_pos + dir * 393.0
 		var visible_enough: bool = ac.x > -2.0  # 지평선 약간 아래도 표시
 		lbl.modulate = Color(0.65, 0.78, 1.0, lbl_alpha if visible_enough else 0.0)
@@ -1378,7 +1378,7 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	_cloud_shader_mat.set_shader_parameter("brightness",    sky_brightness_safe)
 
 	# 태양 방향·색상 → 실버 라이닝 및 바닥 음영 연산
-	_cloud_shader_mat.set_shader_parameter("sun_dir",   _altaz_to_dir(sun_altaz.x, sun_altaz.y))
+	_cloud_shader_mat.set_shader_parameter("sun_dir",   SkyMath._altaz_to_dir(sun_altaz.x, sun_altaz.y))
 	_cloud_shader_mat.set_shader_parameter("sun_color", _sun_light.light_color)
 
 	# 바람 방향 벡터 — 드리프트(이동) + stretch_dir(이방성) 동시 적용
@@ -1416,23 +1416,7 @@ void fragment() {
 	_bolt_inst.visible = false
 	add_child(_bolt_inst)
 
-# 재귀 중점 변위 — [Vector3, Vector3] 쌍 배열 반환
-static func _gen_bolt_segs(from: Vector3, to: Vector3, roughness: float, depth: int) -> Array:
-	if depth <= 0:
-		return [[from, to]]
-	var d: float       = from.distance_to(to)
-	var along: Vector3 = (to - from).normalized()
-	# along이 거의 수직(Y축)이면 X를 레퍼런스로, 아니면 Y를 레퍼런스로
-	var up_ref: Vector3 = Vector3(1.0, 0.0, 0.0) if abs(along.y) >= 0.9 else Vector3(0.0, 1.0, 0.0)
-	var perp1: Vector3  = along.cross(up_ref).normalized()
-	var perp2: Vector3  = along.cross(perp1).normalized()
-	var mid: Vector3    = (from + to) * 0.5
-	mid += perp1 * randf_range(-1.0, 1.0) * d * roughness
-	mid += perp2 * randf_range(-1.0, 1.0) * d * roughness * 0.5
-	var segs: Array = []
-	segs.append_array(_gen_bolt_segs(from, mid, roughness * 0.65, depth - 1))
-	segs.append_array(_gen_bolt_segs(mid,  to,  roughness * 0.65, depth - 1))
-	return segs
+# 재귀 번개 볼트 형상 생성기는 SkyMath.gd로 분리. SkyMath._gen_bolt_segs 참조.
 
 func _regen_bolt(dist_km: float) -> void:
 	var az_rad: float    = deg_to_rad(_bolt_az)
@@ -1443,7 +1427,7 @@ func _regen_bolt(dist_km: float) -> void:
 	var top:    Vector3  = horiz * bolt_dist * 0.55 + Vector3(0.0, 65.0, 0.0)
 	var bottom: Vector3  = horiz * bolt_dist         + Vector3(0.0, 0.5,  0.0)
 	# 주 채널: depth=5 → 최대 32 세그먼트
-	_bolt_segs = _gen_bolt_segs(top, bottom, 0.35, 5)
+	_bolt_segs = SkyMath._gen_bolt_segs(top, bottom, 0.35, 5)
 	# 주 채널 세그먼트 ~30%에서 짧은 가지 생성
 	var branch_segs: Array = []
 	for seg in _bolt_segs:
@@ -1457,7 +1441,7 @@ func _regen_bolt(dist_km: float) -> void:
 			# 가지는 주 방향에서 옆으로 벌어지며 약간 아래쪽으로 뻗음
 			var bdir: Vector3  = (mdir + perp * randf_range(-1.2, 1.2) + Vector3(0.0, -0.4, 0.0)).normalized()
 			var bend: Vector3  = bstart + bdir * randf_range(5.0, 18.0)
-			branch_segs.append_array(_gen_bolt_segs(bstart, bend, 0.45, 3))
+			branch_segs.append_array(SkyMath._gen_bolt_segs(bstart, bend, 0.45, 3))
 	_bolt_segs.append_array(branch_segs)
 
 func _draw_bolt() -> void:
@@ -1509,13 +1493,13 @@ func _spawn_meteor() -> void:
 		# → 뒤로 연장하면 복사점에서 수렴 (원근 수렴 효과 자동 성립)
 		var az:  float = randf_range(0.0, 360.0)
 		var alt: float = randf_range(10.0, 80.0)
-		_meteor_head = _altaz_to_dir(alt, az) * r
+		_meteor_head = SkyMath._altaz_to_dir(alt, az) * r
 		_meteor_dir  = -_shower_radiant.normalized()
 	else:
 		# 산발 유성: 무작위 방향
 		var az:  float = randf_range(0.0, 360.0)
 		var alt: float = randf_range(25.0, 75.0)
-		_meteor_head = _altaz_to_dir(alt, az) * r
+		_meteor_head = SkyMath._altaz_to_dir(alt, az) * r
 		var down: Vector3 = -_meteor_head.normalized()
 		var side: Vector3 = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)).normalized()
 		_meteor_dir = (down * randf_range(0.6, 1.0) + side * randf_range(0.1, 0.6)).normalized()
@@ -1597,8 +1581,8 @@ func _get_shower_state(dt: Dictionary, gmst: float, lat: float, lon: float) -> A
 		var ra: float = sh[2]; var dec: float = sh[3]
 		var zhr: int  = sh[4]; var hw: int   = sh[5]
 		# 날짜 차이 (일), 연도 경계 처리
-		var sim_doy:  int = _day_of_year(dt["month"], dt["day"])
-		var peak_doy: int = _day_of_year(pm, pd)
+		var sim_doy:  int = SkyMath._day_of_year(dt["month"], dt["day"])
+		var peak_doy: int = SkyMath._day_of_year(pm, pd)
 		var diff: int = sim_doy - peak_doy
 		if diff >  183: diff -= 366
 		if diff < -183: diff += 366
@@ -1613,12 +1597,10 @@ func _get_shower_state(dt: Dictionary, gmst: float, lat: float, lon: float) -> A
 		intensity *= (float(zhr) / 120.0) * sin(deg_to_rad(altaz.x))
 		if intensity > best_i:
 			best_i = intensity
-			best_r = _altaz_to_dir(altaz.x, altaz.y)
+			best_r = SkyMath._altaz_to_dir(altaz.x, altaz.y)
 	return [best_i, best_r]
 
-static func _day_of_year(month: int, day: int) -> int:
-	const DAYS: Array = [0,31,59,90,120,151,181,212,243,273,304,334]
-	return DAYS[month - 1] + day
+# 연중 일수 계산은 SkyMath.gd로 분리. SkyMath._day_of_year 참조.
 
 # ── 혜성 ─────────────────────────────────────────────────────────────
 func _build_comet() -> void:
@@ -1693,7 +1675,7 @@ func _draw_comet(cpos: Vector3, sun_altaz: Vector2, bright: float) -> void:
 	_comet_nuc_mat.set_shader_parameter("brightness", clampf(bright * 1.5, 0.0, 3.0))
 	_comet_nuc_inst.visible = true
 
-	var sun3: Vector3      = _altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
+	var sun3: Vector3      = SkyMath._altaz_to_dir(sun_altaz.x, sun_altaz.y).normalized()
 	var away: Vector3      = -sun3
 	var toward: Vector3    = cpos.normalized()   # 관측자 → 혜성 방향
 	var ion_len: float     = cpos.length() * deg_to_rad(18.0) * bright
@@ -1764,7 +1746,7 @@ func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude
 	# 리본 폭 방향이 0벡터로 수렴, 꼬리가 납작한 사각형으로 보이는 문제 방지
 	if _comet_test_mode:
 		var test_sun_altaz := Vector2(25.0, 270.0)   # 서쪽 고도 25°
-		_draw_comet(_altaz_to_dir(45.0, 180.0) * 395.0, test_sun_altaz, 1.0)
+		_draw_comet(SkyMath._altaz_to_dir(45.0, 180.0) * 395.0, test_sun_altaz, 1.0)
 		return
 	var jd:   float = Astronomy.julian_day(dt["year"], dt["month"], dt["day"], hour_utc)
 	var gmst: float = Astronomy.gmst_deg(jd)
@@ -1806,178 +1788,12 @@ func _update_comet(sun_altaz: Vector2, dt: Dictionary, hour_utc: float, latitude
 		_comet_dust_inst.visible = false
 		return
 	var r: float      = 395.0
-	var cpos: Vector3 = _altaz_to_dir(ca.x, ca.y) * r
+	var cpos: Vector3 = SkyMath._altaz_to_dir(ca.x, ca.y) * r
 	var bright: float = clampf((5.5 - comet_mag) / 5.5, 0.0, 1.0)
 	_draw_comet(cpos, sun_altaz, bright)
 
-# ── 수학 헬퍼 (static) ───────────────────────────────────────────────
-static func _altaz_to_dir(alt_deg: float, az_deg: float) -> Vector3:
-	var elev := deg_to_rad(alt_deg)
-	var az   := deg_to_rad(az_deg)
-	return Vector3(sin(az) * cos(elev), sin(elev), cos(az) * cos(elev))
-
-static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
-	if x <= xs[0]: return ys[0]
-	for i in range(xs.size() - 1):
-		if x <= xs[i + 1]:
-			var f: float = (x - xs[i]) / (xs[i + 1] - xs[i])
-			return lerp(ys[i], ys[i + 1], f)
-	return ys[ys.size() - 1]
-
-# B-V 색지수 기반 스펙트럼 색상 — 실제 B-V값에서 변환한 RGB (감마 보정 없음, HDR 값 그대로)
-# 참조: Allen's Astrophysical Quantities, 5th ed. / SIMBAD catalog B-V indices
-# [RA°, Dec°, R, G, B] — RA/Dec는 J2000.0 도 단위, 허용 오차 ±0.8°
-static func _star_spectral_color(ra: float, dec: float) -> Color:
-	# 밝은 별 스펙트럼 색 테이블 (1등성 이상 + 색이 특히 뚜렷한 별)
-	# 청색(B형): (0.72, 0.82, 1.0) / 청백(A형): (0.84, 0.90, 1.0) / 백색(F형): (1.0, 0.97, 0.88)
-	# 황색(G형): (1.0, 0.92, 0.72) / 주황(K형): (1.0, 0.78, 0.48) / 적색(M형): (1.0, 0.55, 0.30)
-	const TABLE: Array = [
-		# 이름         RA       Dec       R     G     B        스펙트럼
-		[101.287, -16.716, 0.87, 0.92, 1.00],  # Sirius      A1V  청백
-		[ 95.988, -52.696, 0.98, 0.98, 1.00],  # Canopus     F0I  백
-		[213.915,  19.182, 1.00, 0.76, 0.44],  # Arcturus    K1.5 주황
-		[279.235,  38.784, 0.82, 0.89, 1.00],  # Vega        A0V  청백
-		[ 79.172,  45.998, 1.00, 0.92, 0.70],  # Capella     G5   황
-		[ 78.634,  -8.201, 0.78, 0.87, 1.00],  # Rigel       B8I  청백
-		[114.828,   5.225, 1.00, 0.97, 0.87],  # Procyon     F5   백황
-		[ 24.429, -57.237, 0.76, 0.85, 1.00],  # Achernar    B6V  청
-		[ 88.792,   7.407, 1.00, 0.52, 0.28],  # Betelgeuse  M2I  적등
-		[297.696,   8.868, 1.00, 0.98, 0.90],  # Altair      A7V  백
-		[ 68.980,  16.509, 1.00, 0.72, 0.38],  # Aldebaran   K5   적주황
-		[247.352, -26.432, 1.00, 0.46, 0.24],  # Antares     M1.5 적
-		[201.298, -11.161, 0.74, 0.84, 1.00],  # Spica       B1V  청
-		[116.329,  28.026, 1.00, 0.86, 0.62],  # Pollux      K0   주황
-		[344.413, -29.622, 1.00, 0.98, 0.93],  # Fomalhaut   A4V  백
-		[310.358,  45.280, 1.00, 0.99, 0.96],  # Deneb       A2I  백
-		[152.093,  11.967, 0.80, 0.88, 1.00],  # Regulus     B7V  청백
-		[104.656, -28.972, 0.75, 0.84, 1.00],  # Adhara      B2II 청
-		[113.649,  31.889, 0.86, 0.92, 1.00],  # Castor      A1V  청백
-		[ 81.283,   6.350, 0.75, 0.85, 1.00],  # Bellatrix   B2   청
-		[ 81.572,  28.608, 0.82, 0.89, 1.00],  # Elnath      B7   청백
-		[253.084, -42.998, 1.00, 0.97, 0.88],  # Sargas      F1   백
-		[193.507,  55.960, 0.90, 0.94, 1.00],  # Alioth      A0   청백
-		[276.992, -34.385, 0.90, 0.95, 1.00],  # Kaus Aus.   B9   백
-		[ 99.428,  16.399, 1.00, 0.99, 0.94],  # Alhena      A0   백
-		[219.919, -60.833, 1.00, 0.94, 0.76],  # Rigil Kent. G2V  황
-		[210.956, -60.373, 0.73, 0.83, 1.00],  # Hadar       B1   청
-		# 남반구 밝은 별 (남위 25° 이남에서 관측 가능)
-		[186.650, -63.099, 0.72, 0.82, 1.00],  # Acrux  α Cru B0.5 청
-		[191.930, -59.689, 0.72, 0.82, 1.00],  # Mimosa β Cru B0.5 청
-		[187.791, -57.113, 1.00, 0.50, 0.25],  # Gacrux γ Cru M4   적 (남반구 붉은 별 대표)
-		[125.629, -59.509, 1.00, 0.82, 0.56],  # Avior  ε Car K0+B 주황백
-		[138.301, -69.717, 0.90, 0.95, 1.00],  # Miaplacidus β Car A2 청백
-		[204.972, -53.466, 0.73, 0.83, 1.00],  # ε Cen  B1   청
-		[ 29.692, -61.400, 0.80, 0.88, 1.00],  # β Eri  A3   청백
-	]
-	const TOL2: float = 0.64   # 허용 오차 0.8°의 제곱
-	for entry in TABLE:
-		var dra: float  = ra  - entry[0]
-		var ddec: float = dec - entry[1]
-		if dra * dra + ddec * ddec < TOL2:
-			return Color(entry[2], entry[3], entry[4])
-	return Color(1.0, 1.0, 1.0)   # 목록에 없는 별: 흰색
-
-static func _sun_illuminance(alt_deg: float) -> float:
-	var anchors_alt := [-18.0, -12.0, -6.0, 0.0, 10.0, 30.0, 60.0, 90.0]
-	# -12° 실측: 0.002–0.004 lux (항해박명 끝 — 지평선 겨우 구분), 10° 실측: ~9,000 lux
-	var anchors_lux := [0.0008, 0.003, 3.4, 400.0, 9000.0, 50000.0, 90000.0, 100000.0]
-	var a: float = clampf(alt_deg, -18.0, 90.0)
-	for i in range(anchors_alt.size() - 1):
-		if a <= anchors_alt[i + 1] or i == anchors_alt.size() - 2:
-			var t0: float = anchors_alt[i]; var t1: float = anchors_alt[i + 1]
-			var f: float = 0.0
-			if t1 > t0: f = clampf((a - t0) / (t1 - t0), 0.0, 1.0)
-			var l0: float = log(anchors_lux[i]) / log(10.0)
-			var l1: float = log(anchors_lux[i + 1]) / log(10.0)
-			return pow(10.0, lerp(l0, l1, f))
-	return anchors_lux[anchors_lux.size() - 1]
-
-static func _exposure_for_lux(total_lux: float) -> float:
-	var anchors_lux := [STARLIGHT_FLOOR_LUX, 0.01, 0.1, 1.0, 3.4, 12.0, 40.0, 120.0, 400.0, 3000.0, 12000.0, 100000.0]
-	var anchors_ev  := [19.5, 18.5, 17.2, 15.0, 12.5, 10.0, 8.0, 5.5, 3.5, 1.8, 0.6, 0.0]
-	var lux: float     = max(total_lux, STARLIGHT_FLOOR_LUX)
-	var log_lux: float = log(lux) / log(10.0)
-	for i in range(anchors_lux.size() - 1):
-		var l0: float = log(anchors_lux[i]) / log(10.0)
-		var l1: float = log(anchors_lux[i + 1]) / log(10.0)
-		if log_lux <= l1 or i == anchors_lux.size() - 2:
-			var f: float = 0.0
-			if l1 > l0: f = clampf((log_lux - l0) / (l1 - l0), 0.0, 1.0)
-			return lerp(anchors_ev[i], anchors_ev[i + 1], f)
-	return anchors_ev[anchors_ev.size() - 1]
-
-# ── Preetham(1999) 대기 산란 모델 ─────────────────────────────────────────
-# "A Practical Analytic Model for Daylight", Preetham, Shirley, Smits (1999)
-# sun_elev_deg: 태양 고도각 (0=지평선, 90=천정). 음수는 0으로 클램프 후 호출.
-# turbidity: 대기 혼탁도 T (2=맑음, 10=탁함). 권장 기본값 3.0.
-# 반환: [Color zenith_top, Color horizon] — 선형 광색(HDR, >1 가능), ProceduralSkyMaterial에 직접 설정.
-# 보정 기준: T=3, θ_s=45°(고도45°) 에서 청색 채널 ≈ 0.95 (SCALE=0.05)
-static func _preetham_sky_colors(sun_elev_deg: float, turbidity: float) -> Array:
-	var T  := clampf(turbidity, 2.0, 10.0)
-	var T2 := T * T
-	# 태양 천정각 (0=태양이 바로 위, π/2=지평선)
-	var ts  := deg_to_rad(clampf(90.0 - sun_elev_deg, 0.0, 90.0))
-	var ts2 := ts * ts
-	var ts3 := ts2 * ts
-
-	# 천정 휘도 Yz (kcd/m²)
-	var chi := (4.0/9.0 - T/120.0) * (PI - 2.0*ts)
-	var Yz  := maxf((4.0453*T - 4.9710) * tan(chi) - 0.2155*T + 2.4192, 0.01)
-
-	# 천정 색도 (CIE 1931 x, y)
-	var xz := clampf(
-		T2*(0.00216*ts3 - 0.00375*ts2 + 0.00209*ts)
-		+ T*(-0.02903*ts3 + 0.06377*ts2 - 0.03202*ts + 0.00394)
-		+ (0.11693*ts3 - 0.21196*ts2 + 0.06052*ts + 0.25886), 0.01, 0.8)
-	var yz := clampf(
-		T2*(0.00275*ts3 - 0.00610*ts2 + 0.00317*ts)
-		+ T*(-0.04214*ts3 + 0.08970*ts2 - 0.04153*ts + 0.00516)
-		+ (0.15346*ts3 - 0.26756*ts2 + 0.06670*ts + 0.26688), 0.01, 0.8)
-
-	# Perez 계수 (Y=휘도, _x=색도x, _yy=색도y)
-	var A_Y  :=  0.1787*T - 1.4630; var B_Y  := -0.3554*T + 0.4275
-	var C_Y  := -0.0227*T + 5.3251; var D_Y  :=  0.1206*T - 2.5771; var E_Y  := -0.0670*T + 0.3703
-	var A_x  := -0.0193*T - 0.2592; var B_x  := -0.0665*T + 0.0008
-	var C_x  := -0.0004*T + 0.2125; var D_x  := -0.0641*T - 0.8989; var E_x  := -0.0033*T + 0.0452
-	var A_yy := -0.0167*T - 0.2608; var B_yy := -0.0950*T + 0.0092
-	var C_yy := -0.0079*T + 0.2102; var D_yy := -0.0441*T - 1.6537; var E_yy := -0.0109*T + 0.0529
-
-	# Perez 분포 F(theta, gamma) = (1+A·e^(B/cosθ))·(1+C·e^(D·γ)+E·cos²γ)
-	# 천정 기준값 (θ=0, γ=ts): cos(0)=1, cos(ts)=cos_ts
-	var cos_ts := cos(ts)
-	var f0Y  := (1.0+A_Y *exp(B_Y ))*(1.0+C_Y *exp(D_Y *ts)+E_Y *cos_ts*cos_ts)
-	var f0x  := (1.0+A_x *exp(B_x ))*(1.0+C_x *exp(D_x *ts)+E_x *cos_ts*cos_ts)
-	var f0yy := (1.0+A_yy*exp(B_yy))*(1.0+C_yy*exp(D_yy*ts)+E_yy*cos_ts*cos_ts)
-
-	# 지평선 샘플 (θ=89°, γ = π/2−ts : 태양 방향 기준 지평선)
-	# gm_h 하한 5°: ts→90°(태양 지평선)일 때 gm_h=0 → 최대 circumsolar glow가 되는
-	# 극단값을 방지. 이 하한은 D항(360° 균일 적용 한계)과 별개의 B항 완화 수단.
-	var th_h  := deg_to_rad(89.0)
-	var gm_h  := maxf(deg_to_rad(5.0), PI * 0.5 - ts)
-	var ct_h  := maxf(cos(th_h), 0.001)
-	var cg_h  := cos(gm_h)
-	var fhY  := (1.0+A_Y *exp(B_Y /ct_h))*(1.0+C_Y *exp(D_Y *gm_h)+E_Y *cg_h*cg_h)
-	var fhx  := (1.0+A_x *exp(B_x /ct_h))*(1.0+C_x *exp(D_x *gm_h)+E_x *cg_h*cg_h)
-	var fhyy := (1.0+A_yy*exp(B_yy/ct_h))*(1.0+C_yy*exp(D_yy*gm_h)+E_yy*cg_h*cg_h)
-
-	# 지평선 xyY
-	var hor_x := clampf(xz * fhx  / maxf(f0x,  0.001), 0.01, 0.8)
-	var hor_y := clampf(yz * fhyy / maxf(f0yy, 0.001), 0.01, 0.8)
-	var hor_Y := Yz * fhY / maxf(f0Y, 0.001)
-
-	# xyY → XYZ → 선형 sRGB. SCALE=0.05: T=3, θ_s=45° 기준 청색채널≈0.95 목표
-	const SCALE := 0.05
-	var _to_rgb := func(cx:float, cy:float, Y:float) -> Color:
-		if cy < 0.001: return Color(0.0, 0.0, 0.0)
-		var X := Y * cx / cy
-		var Z := Y * (1.0 - cx - cy) / cy
-		return Color(
-			maxf( 3.2405*X - 1.5371*Y - 0.4985*Z, 0.0),
-			maxf(-0.9693*X + 1.8760*Y + 0.0416*Z, 0.0),
-			maxf( 0.0556*X - 0.2040*Y + 1.0572*Z, 0.0))
-
-	return [_to_rgb.call(xz,  yz,  Yz  * SCALE),
-			_to_rgb.call(hor_x, hor_y, hor_Y * SCALE)]
+# 수학/물리 정적 헬퍼(천구 방향 변환·별 스펙트럼 색·태양 조도·노출·Preetham CPU·
+# 구간 보간)는 SkyMath.gd로 분리. SkyMath.X 로 참조.
 
 func _build_aurora() -> void:
 	# 오로라 커튼: 반구(r=390) 위쪽 절반 — 고위도에서 북쪽 하늘에 나타남
@@ -2096,7 +1912,7 @@ func _update_trails(dt: Dictionary, latitude: float, longitude: float) -> void:
 	for i in range(STEPS + 1):
 		var h: float  = i * 24.0 / STEPS
 		var az: Vector2 = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], h, latitude, longitude)
-		var sun_d: Vector3 = _altaz_to_dir(az.x, az.y)
+		var sun_d: Vector3 = SkyMath._altaz_to_dir(az.x, az.y)
 		# 색: 지평선 위=노란색, 아래=어두운 주황/회색
 		var alpha: float = 0.55 if az.x > 0.0 else 0.20
 		var col: Color = Color(1.0, 0.90, 0.30, alpha) if az.x > 0.0 else Color(0.7, 0.5, 0.3, alpha)
@@ -2121,7 +1937,7 @@ func _update_trails(dt: Dictionary, latitude: float, longitude: float) -> void:
 		var dec: float       = asin(sin(deg_to_rad(moon_lat)) * cos(deg_to_rad(eps)) + cos(deg_to_rad(moon_lat)) * sin(deg_to_rad(eps)) * sin(deg_to_rad(moon_lon))) * 180.0 / PI
 		var gmst_i: float    = Astronomy.gmst_deg(jd_i)
 		var m_az: Vector2    = Astronomy.radec_to_altaz(ra, dec, gmst_i, latitude, longitude)
-		var moon_d: Vector3  = _altaz_to_dir(m_az.x, m_az.y)
+		var moon_d: Vector3  = SkyMath._altaz_to_dir(m_az.x, m_az.y)
 		var frac: float      = float(i) / 168.0  # 0=과거, 1=현재, 0.5=중간
 		var age_alpha: float = 0.15 + 0.35 * (1.0 - abs(frac - 0.5) * 2.0)  # 현재 근처가 밝음
 		var moon_col: Color  = Color(0.75, 0.80, 0.95, age_alpha)
