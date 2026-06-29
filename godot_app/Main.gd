@@ -140,6 +140,12 @@ func _maybe_auto_screenshot() -> void:
 	var lat_idx := args.find("--lat")
 	if lat_idx >= 0 and lat_idx + 1 < args.size():
 		latitude = float(args[lat_idx + 1])
+	var mon_idx := args.find("--month")
+	if mon_idx >= 0 and mon_idx + 1 < args.size():
+		sim_month = int(args[mon_idx + 1])
+	var day_idx := args.find("--day")
+	if day_idx >= 0 and day_idx + 1 < args.size():
+		sim_day = int(args[day_idx + 1])
 	var fixed_time: float = -999.0
 	var time_idx := args.find("--time")
 	if time_idx >= 0 and time_idx + 1 < args.size():
