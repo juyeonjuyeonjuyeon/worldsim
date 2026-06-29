@@ -1116,20 +1116,22 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	#  (2) 렌더: night_* 가 ×16 노출 후 Filmic toe(흑색 절벽)에 걸려 미세 차이로 0↔28
 	#      깜빡임 발생. 바닥을 toe 위로 올려 안정적 dark-blue 유지.
 	# van Rhijn: 지평선이 천정보다 밝음(시선이 발광층을 더 긴 경로로 통과).
-	# exp_norm 공유 → night_* 와 동일 노출 스케일(노출 독립).
-	# 바닥 점증을 셰이더 dtn 블렌드(태양 -2°~-10°)보다 약간 앞서게(-1°~-9°) 맞춤.
-	# 이전 -10°~-18°는 너무 늦어, 박명 중 하늘이 바닥 없는 캄캄한 night_col로 블렌드
-	# →"어두워졌다 까매졌다 다시 밝아짐" 구멍 발생. 앞당겨 박명~야간 매끄럽게 연결.
-	var deep_t: float = smoothstep(1.0, 9.0, -elevation)
-	# 청백 별빛/산란 바닥 — Rayleigh로 청색 우세 (Filmic toe 위로 올려 안정화).
-	# 깊은 밤 천정이 옅은 남청색이 되도록 보정(이전 0.10~0.19는 박명급으로 과밝았음).
-	var floor_top := Color(0.012, 0.016, 0.030) * exp_norm * deep_t
-	var floor_hor := Color(0.018, 0.023, 0.038) * exp_norm * deep_t   # 지평선 더 밝음
-	# 대기광 녹색 가산(OI 557.7nm) — 더 깊은 밤에 점증, 구름이 가림.
-	# 크기 억제: 깊은 밤이 박명보다 밝아지면 비물리(밤이 가장 어두워야) → 미세하게만.
-	var airglow_t: float = smoothstep(14.0, 24.0, -elevation) * exp(-(cloud_props["tau"] as float) / 3.0)
-	floor_top += Color(0.003, 0.009, 0.004) * exp_norm * airglow_t
-	floor_hor += Color(0.005, 0.014, 0.006) * exp_norm * airglow_t
+	# exp_norm 공유 → 셰이더 산란광과 동일 노출 스케일(노출 독립).
+	# 박명은 이제 셰이더 단일산란에서 창발하므로, 이 바닥은 "산란광이 거의 사라진
+	# 깊은 밤"의 별빛+영구 대기광 배경만 담당한다. 산란광에 가산(additive)되므로
+	# 천문박명 이후(태양 -10°~-18°)에만 점증시켜 박명보다 밝아지는 역전을 방지.
+	# 단일산란이 사라지는 구간(태양 -3°~-14°)에 맞춰 점증 → 합이 단조 감광.
+	# (단일산란이 놓치는 다중산란 잔광 + 별빛을 함께 근사하는 배경광)
+	var deep_t: float = smoothstep(-1.0, 4.0, -elevation)
+	# 별빛 Rayleigh 산란 배경 — 청색 우세. 시민박명 끝까지 차올라 산란 급강하를 받아
+	# 단조 감광을 만든다(항해/천문박명의 추가 감광은 단일산란 범위 밖 → 평탄 근사).
+	var floor_top := Color(0.0028, 0.0038, 0.0072) * exp_norm * deep_t
+	var floor_hor := Color(0.0040, 0.0054, 0.0098) * exp_norm * deep_t   # 지평선 더 밝음
+	# 대기광 녹색(OI 557.7nm) — 미세한 색 틴트만. floor와 동일 타이밍(deep_t)으로 켜서
+	# 심야가 박명보다 밝아지는 역전(늦은 점증으로 인한 재상승)을 방지. 구름이 가림.
+	var airglow_t: float = deep_t * exp(-(cloud_props["tau"] as float) / 3.0)
+	floor_top += Color(0.0004, 0.0012, 0.0006) * exp_norm * airglow_t
+	floor_hor += Color(0.0007, 0.0020, 0.0009) * exp_norm * airglow_t
 	# 바닥 적용: 달빛으로 base가 더 밝으면 base 유지(max), 아니면 바닥으로 안정화
 	night_top.r = maxf(night_top.r, floor_top.r)
 	night_top.g = maxf(night_top.g, floor_top.g)
