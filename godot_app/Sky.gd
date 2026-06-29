@@ -1243,18 +1243,24 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# tonemap_exposure = exposure_mult (최대 16×)가 sky에도 적용되어 256× 이중곱이 됐음.
 	# * 16.0 제거 → tonemap_exposure 단일 경로가 적절한 밝기 보정을 담당한다.
 	var moon_sky_factor: float = 1.0 + clampf(moon_lux / 0.27, 0.0, 1.0) * 1.5
-	# CIE 1951 스코토픽 V'(λ): 507nm 피크 → R×0.80, G×0.90, B×1.15 근사 (scotopic_w=1 시)
+	# CIE 1951 V'(λ)/V(λ) 비율 기반 Purkinje 이동:
+	# R(620nm): V'≈0.034/V≈0.381 → scotopic 89% 감소 → 0.80 (보수적 반영)
+	# G(555nm): V'≈0.481/V≈0.995 → scotopic 52% 감소 → 0.48
+	# B(450nm): V'≈0.171/V≈0.038 → scotopic 350% 증가 → 1.15 (보수적)
 	var scotopic_r: float = scotopic_boost * (1.0 - scotopic_w * 0.20)
-	var scotopic_g: float = scotopic_boost * (1.0 - scotopic_w * 0.10)
+	var scotopic_g: float = scotopic_boost * (1.0 - scotopic_w * 0.52)
 	var scotopic_b: float = scotopic_boost * (1.0 + scotopic_w * 0.15)
+	# exp_norm: night_top 물리값이 tonemap_exposure와 독립되도록 보정
+	# 별빛 최소야간도 exposure_mult=16으로 올라가 night_top×16=과밝음 문제 해결
+	var exp_norm: float = 1.0 / maxf(exposure_mult, 0.5)
 	var night_top := Color(
-		0.00190 * moon_sky_factor * scotopic_r,
-		0.00218 * moon_sky_factor * scotopic_g,
-		0.00358 * moon_sky_factor * scotopic_b)
+		0.00190 * moon_sky_factor * scotopic_r * exp_norm,
+		0.00218 * moon_sky_factor * scotopic_g * exp_norm,
+		0.00358 * moon_sky_factor * scotopic_b * exp_norm)
 	var night_horizon := Color(
-		0.00080 * moon_sky_factor * scotopic_r,
-		0.00085 * moon_sky_factor * scotopic_g,
-		0.00140 * moon_sky_factor * scotopic_b)
+		0.00080 * moon_sky_factor * scotopic_r * exp_norm,
+		0.00085 * moon_sky_factor * scotopic_g * exp_norm,
+		0.00140 * moon_sky_factor * scotopic_b * exp_norm)
 
 	# ── 대기광 (Airglow): 중간권 화학 발광 — 야간 깊을수록 미묘한 녹색 조 ─
 	# OI 557.7 nm (원자산소), OH 밴드가 주 기여. 맑은 밤에만 보임.
@@ -1303,7 +1309,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 낮(elevation>0°): twilight_factor=0 → twi_sat_floor 사용, sat≈1.0이라 floor는 영향 없음
 	var twilight_factor: float = clampf(-elevation / 18.0, 0.0, 1.0)
 	var twi_sat_floor: float   = lerpf(0.72, 0.65, scotopic_w)  # 박명: 암순응 강도로 연속
-	var night_sat_floor: float = lerpf(0.30, 0.28, scotopic_w)  # 밤: Purkinje 청색 잔류
+	var night_sat_floor: float = lerpf(0.55, 0.50, scotopic_w)  # 밤: 파란 채도 보존 (exp_norm 보정 후 적정 채도)
 	var sat_floor: float = lerp(twi_sat_floor, night_sat_floor, twilight_factor)
 	_world_env.environment.adjustment_saturation = lerp(sat_floor, 1.0, sat)
 
