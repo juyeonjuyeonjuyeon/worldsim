@@ -296,6 +296,9 @@ uniform float exposure_safe : hint_range(0.0, 1.0)   = 1.0;
 uniform vec2  eclipse_moon_uv = vec2(99.0, 99.0);
 uniform float eclipse_moon_r  = 0.0;
 uniform float eclipse_total   = 0.0;
+// 원반·글레어 밝기 배율 — 고도별(높을 때 밝은 흰 디스크, 질 때 어두운 오렌지).
+// 지는 태양은 대기 소광으로 ~1000× 어두워짐 → 낮춰야 오렌지가 흰색에 안 묻힘(오렌지아워).
+uniform float disk_bright     = 2.2;
 
 varying float v_world_dir_y;
 
@@ -338,8 +341,8 @@ void fragment() {
 	float haze_t     = clamp((1.0 - horizon_fade) * 1.5, 0.0, 1.0);
 	float outer_frac = clamp((d - 0.10) * 3.0, 0.0, 1.0);
 	// 노출 독립화: ×exposure_safe 후 Environment tonemap(×노출)이 상쇄 → 노출 무관 일정.
-	// ×2.2: 원반은 토널 상한을 넘겨 밝은 흰 디스크로 클립, 광환은 비례 약화.
-	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t) * exposure_safe * 2.2;
+	// disk_bright: 고도별(높을 때 밝은 흰 디스크, 질 때 어두운 오렌지 → 오렌지아워).
+	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t) * exposure_safe * disk_bright;
 	// 녹색 섬광: 디스크 원반만 초록/청록으로 혼합
 	ALBEDO = mix(ALBEDO, vec3(0.15, 0.90, 0.55) * exposure_safe * 2.2, disc * green_flash);
 	// 코로나: 진주빛 흰색 가산
@@ -1135,6 +1138,9 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 
 	# 태양 원반 색을 DirectionalLight 색과 동기화 (지평선=주황, 상공=흰색)
 	_sun_shader_mat.set_shader_parameter("sun_color", Vector3(sun_color.r, sun_color.g, sun_color.b))
+	# 원반 밝기: 높을 때 밝은 흰 디스크(2.2), 질 때 어두운 오렌지(0.55) → 오렌지아워.
+	# 지는 태양은 대기 소광으로 실제로 훨씬 어두운 적·주황. 흰색 글레어가 노을 색을 덮지 않게.
+	_sun_shader_mat.set_shader_parameter("disk_bright", clampf(0.55 + elevation / 16.0, 0.55, 2.2))
 
 	# 일식: 달 원반 위치를 태양 빌보드 좌표(dvec)로 투영해 셰이더에 전달
 	if solar_cover > 0.001:

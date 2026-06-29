@@ -126,8 +126,16 @@ void sky() {
 	vec3 eye_above = normalize(vec3(eye.x, max(eye.y, 0.0008), eye.z));
 	float mie_mul = u_turbidity / 3.0;   // 혼탁도 → Mie 강도
 
-	// ── 산란된 햇빛 (낮+박명 창발) ── 노출 독립화
-	vec3 sky_col = atmosphere(ro, eye_above, sun, mie_mul) * u_sun_intensity / max(u_exposure, 0.001);
+	// ── 산란된 햇빛 (낮+박명 창발) ──
+	vec3 raw = atmosphere(ro, eye_above, sun, mie_mul) * u_sun_intensity;
+	// 색조 보존 하이라이트 롤오프: 밝은 일몰 지평선(HDR 오렌지 R>G>B)이 Filmic 톤맵에서
+	// 탈색돼 흰색이 되는 문제 해결. 휘도>1(밝은 부분)만 로그 압축(채널비=색조 유지) →
+	// 일몰 지평선이 오렌지로 살아남고 정오 등 일반 하늘(휘도<1)은 그대로.
+	float lum = dot(raw, vec3(0.2126, 0.7152, 0.0722));
+	float t_lum = (lum <= 1.0) ? lum : (1.0 + log(lum) * 0.18);
+	raw *= t_lum / max(lum, 1e-4);
+	// 노출 독립화
+	vec3 sky_col = raw / max(u_exposure, 0.001);
 
 	// ── 야간 배경광 (별빛+영구 대기광) ── GDScript에서 ÷노출(exp_norm) 적용됨.
 	// 물리적으로 항상 존재하는 가산 성분: 낮엔 산란광에 묻히고, 산란광이 박명에
