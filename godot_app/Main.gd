@@ -136,6 +136,13 @@ func _maybe_auto_screenshot() -> void:
 	var idx := args.find("--auto-screenshot")
 	if idx < 0:
 		return
+	# 렌더 창을 최상위·전면으로 강제 — 백그라운드 실행 시 창이 다른 창(에디터)에
+	# 가려지면(occlusion) macOS가 렌더를 중단해 get_image()가 멈춘다. 이를 방지.
+	var _win := get_window()
+	if _win:
+		_win.always_on_top = true
+		_win.grab_focus()
+		DisplayServer.window_move_to_foreground()
 	var out_path: String = "user://auto_screenshot.png" if idx + 1 >= args.size() else args[idx + 1]
 	var lat_idx := args.find("--lat")
 	if lat_idx >= 0 and lat_idx + 1 < args.size():
