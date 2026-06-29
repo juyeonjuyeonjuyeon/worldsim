@@ -1973,7 +1973,9 @@ func _build_aurora() -> void:
 	var aurora_shader := Shader.new()
 	aurora_shader.code = """
 shader_type spatial;
-render_mode blend_add, depth_draw_never, cull_back, unshaded;
+// cull_front: 카메라가 구 내부에 있으므로 안쪽 면(back face)을 봐야 한다.
+// cull_back이면 안쪽 면이 컬링돼 오로라가 전혀 안 보였음(다른 천구 돔과 동일하게 cull_front).
+render_mode blend_add, depth_draw_never, cull_front, unshaded;
 uniform float intensity    : hint_range(0.0, 1.0) = 0.0;
 uniform float time_phase   : hint_range(0.0, 628.0) = 0.0;
 uniform vec3  mag_north    = vec3(0.0, 0.0, -1.0);  // 자기 북극 방향
@@ -1998,12 +2000,17 @@ void fragment() {
 	curtain = clamp(curtain, 0.0, 1.0);
 	// 수직 스트리밍 (자기력선 따라)
 	float stream    = abs(sin(vd.y * 18.0 + az * 2.0 + time_phase * 2.5)) * 0.3;
-	// KP에 따른 색 변화: KP<3=녹색, KP3-6=녹+보라, KP>6=빨강 추가
-	float green_frac = clamp(1.0 - kp_index / 4.0, 0.0, 1.0);
-	float purple_frac = clamp((kp_index - 2.0) / 4.0, 0.0, 1.0);
-	float red_frac   = clamp((kp_index - 5.0) / 4.0, 0.0, 1.0);
-	vec3 aurora_col  = vec3(red_frac * 0.5, green_frac * 0.9 + 0.1, purple_frac * 0.6)
-	                  + vec3(stream * 0.2, stream * 0.5, stream * 0.3);
+	// 오로라 색 = 원자 발광선 + 발광 고도 구조(물리). 557nm 산소 녹색이 ~100km에서
+	// 모든 오로라의 기본 우세색. 강한 폭풍(KP↑)에 상단 630nm 산소 적색(200km+),
+	// 하단 N2+ 청자색(~90km) 추가. 시야 높이(vd.y)로 적(상)·녹(중)·자(하) 수직 분리.
+	float green_amt  = 0.9;                                      // 557nm — 항상 우세한 녹색 기저
+	float red_amt    = clamp((kp_index - 4.0) / 5.0, 0.0, 1.0);  // 630nm — 강한 이벤트 적색
+	float purple_amt = clamp((kp_index - 3.0) / 6.0, 0.0, 1.0);  // N2+ — 청자색
+	float hi         = smoothstep(0.1, 0.6, vd.y);               // 시야 높이(상단=적, 하단=자)
+	vec3 aurora_col  = vec3(red_amt * 0.9 * hi + purple_amt * 0.45 * (1.0 - hi),
+	                        green_amt,
+	                        purple_amt * 0.8 * (1.0 - hi) + 0.15)
+	                  + vec3(stream * 0.15, stream * 0.4, stream * 0.25);
 	float alpha = lat_band * above * curtain * intensity;
 	// blend_add 기여 = ALBEDO×ALPHA. 이전엔 ALBEDO에도 alpha를 곱해 alpha² 이중적용
 	// → 극도로 어두워 안 보였음. ALBEDO=색, ALPHA=커버리지로 단일 적용.
