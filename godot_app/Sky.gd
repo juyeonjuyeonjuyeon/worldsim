@@ -96,6 +96,7 @@ var _aurora_mat:  ShaderMaterial
 var _aurora_intensity: float = 0.0   # 현재 오로라 강도 (0~1)
 var _aurora_kp:   float = 0.0        # 시뮬 KP 지수 (0~9)
 var _aurora_next_event: float = 0.0  # 다음 이벤트 발생까지 시간(초)
+var _aurora_force: bool = false      # 데모: 위도 무관 강제 표시(야간 조건은 유지)
 
 # ── 빌드 ─────────────────────────────────────────────────────────────
 func build() -> void:
@@ -142,6 +143,13 @@ func trigger_eclipse(type: String) -> void:
 # 블루문 토글 (산불/화산재 에어로졸 조건 — 빨강 산란 제거로 달이 청색)
 func trigger_blue_moon() -> void:
 	_blue_moon = not _blue_moon
+
+# 오로라 데모 토글 — 위도 무관 강제(저위도에선 자연발생 안 하므로). 야간 필요.
+func trigger_aurora_force() -> void:
+	_aurora_force = not _aurora_force
+	if _aurora_force:
+		_aurora_kp = 7.0   # 강한 이벤트
+		_aurora_next_event = 99999.0
 
 func _load_star_catalog() -> void:
 	var f := FileAccess.open("res://stars.json", FileAccess.READ)
@@ -1991,8 +1999,10 @@ void fragment() {
 	vec3 aurora_col  = vec3(red_frac * 0.5, green_frac * 0.9 + 0.1, purple_frac * 0.6)
 	                  + vec3(stream * 0.2, stream * 0.5, stream * 0.3);
 	float alpha = lat_band * above * curtain * intensity;
-	ALBEDO = aurora_col * alpha;
-	ALPHA  = clamp(alpha * 0.7, 0.0, 1.0);
+	// blend_add 기여 = ALBEDO×ALPHA. 이전엔 ALBEDO에도 alpha를 곱해 alpha² 이중적용
+	// → 극도로 어두워 안 보였음. ALBEDO=색, ALPHA=커버리지로 단일 적용.
+	ALBEDO = aurora_col;
+	ALPHA  = clamp(alpha, 0.0, 1.0);
 }
 """
 	_aurora_mat = ShaderMaterial.new()
@@ -2000,15 +2010,15 @@ void fragment() {
 	_aurora_mat.set_shader_parameter("intensity",  0.0)
 	_aurora_mat.set_shader_parameter("time_phase", 0.0)
 	_aurora_mat.set_shader_parameter("kp_index",   0.0)
-	_aurora_mat.set_shader_parameter("mag_north",  Vector3(0.0, 0.866, -0.5))  # 자기 북극 근사
+	_aurora_mat.set_shader_parameter("mag_north",  Vector3(0.0, 0.70, 0.71))  # 자기 북극(북쪽 az0, 고도45°)
 	_aurora_mesh.material_override = _aurora_mat
 	add_child(_aurora_mesh)
 
 func _update_aurora(sun_altaz: Vector2, latitude: float, cloud_props: Dictionary, delta: float) -> void:
 	var sky_cam: Camera3D = get_viewport().get_camera_3d()
 	_aurora_mesh.global_position = sky_cam.global_position if is_instance_valid(sky_cam) else Vector3.ZERO
-	# 위도 50° 미만이면 오로라 없음
-	if abs(latitude) < 50.0:
+	# 위도 50° 미만이면 자연발생 없음 (단 데모 강제 시 우회)
+	if abs(latitude) < 50.0 and not _aurora_force:
 		_aurora_intensity = lerpf(_aurora_intensity, 0.0, delta * 0.5)
 		_aurora_mat.set_shader_parameter("intensity", _aurora_intensity)
 		_aurora_mesh.visible = _aurora_intensity > 0.001
@@ -2017,12 +2027,14 @@ func _update_aurora(sun_altaz: Vector2, latitude: float, cloud_props: Dictionary
 	var sun_elev: float  = sun_altaz.x
 	var night_f: float   = clampf((-sun_elev - 12.0) / 6.0, 0.0, 1.0)
 	var clear_f: float   = exp(-(cloud_props.get("tau", 0.0) as float) / 1.5)
-	# KP 시뮬레이션: 랜덤 이벤트 (0.3% 확률/초)
-	_aurora_next_event -= delta
-	if _aurora_next_event <= 0.0:
-		_aurora_kp = randf() * 9.0 if randf() < 0.3 else randf() * 3.0  # 30%: 강한 이벤트
-		_aurora_next_event = randf_range(600.0, 3600.0)  # 10분~1시간 간격
-	var lat_factor: float = clampf((abs(latitude) - 50.0) / 20.0, 0.0, 1.0)
+	# KP 시뮬레이션: 랜덤 이벤트 (0.3% 확률/초) — 강제 데모 중엔 KP 유지
+	if not _aurora_force:
+		_aurora_next_event -= delta
+		if _aurora_next_event <= 0.0:
+			_aurora_kp = randf() * 9.0 if randf() < 0.3 else randf() * 3.0  # 30%: 강한 이벤트
+			_aurora_next_event = randf_range(600.0, 3600.0)  # 10분~1시간 간격
+	# 강제 데모면 위도인자 1(저위도에서도 보이게)
+	var lat_factor: float = 1.0 if _aurora_force else clampf((abs(latitude) - 50.0) / 20.0, 0.0, 1.0)
 	var target_i: float  = _aurora_kp / 9.0 * lat_factor * night_f * clear_f * 0.8
 	var spd: float = 0.12 if target_i > _aurora_intensity else 0.05
 	_aurora_intensity = lerpf(_aurora_intensity, target_i, delta * spd)
