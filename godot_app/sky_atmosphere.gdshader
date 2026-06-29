@@ -27,7 +27,8 @@ float perez(float cos_theta, float gamma, float a, float b, float c, float d, fl
 // eye.y > 0 (지평선 위)만 유효; 지평선 아래는 호출 전 클램프
 vec3 preetham(vec3 eye, vec3 sun, float T) {
 	float sun_y   = clamp(sun.y, 0.0, 1.0);
-	float theta_s = acos(sun_y);            // 태양 천정각
+	// gm_h 제한: theta_s 최대 85° — 지평선 근처 Perez F(0,theta_s) 불안정 방지
+	float theta_s = min(acos(sun_y), PI * 0.5 - radians(5.0));
 
 	float cos_theta = max(eye.y, 1e-3);
 	float gamma     = acos(clamp(dot(eye, sun), -1.0, 1.0)); // 시선~태양 각
