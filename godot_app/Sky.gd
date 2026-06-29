@@ -1117,15 +1117,19 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	#      깜빡임 발생. 바닥을 toe 위로 올려 안정적 dark-blue 유지.
 	# van Rhijn: 지평선이 천정보다 밝음(시선이 발광층을 더 긴 경로로 통과).
 	# exp_norm 공유 → night_* 와 동일 노출 스케일(노출 독립).
-	var deep_t: float = smoothstep(10.0, 18.0, -elevation)   # 천문박명 진입부터 점증
+	# 바닥 점증을 셰이더 dtn 블렌드(태양 -2°~-10°)보다 약간 앞서게(-1°~-9°) 맞춤.
+	# 이전 -10°~-18°는 너무 늦어, 박명 중 하늘이 바닥 없는 캄캄한 night_col로 블렌드
+	# →"어두워졌다 까매졌다 다시 밝아짐" 구멍 발생. 앞당겨 박명~야간 매끄럽게 연결.
+	var deep_t: float = smoothstep(1.0, 9.0, -elevation)
 	# 청백 별빛/산란 바닥 — Rayleigh로 청색 우세 (Filmic toe 위로 올려 안정화).
 	# 깊은 밤 천정이 옅은 남청색이 되도록 보정(이전 0.10~0.19는 박명급으로 과밝았음).
 	var floor_top := Color(0.012, 0.016, 0.030) * exp_norm * deep_t
 	var floor_hor := Color(0.018, 0.023, 0.038) * exp_norm * deep_t   # 지평선 더 밝음
-	# 대기광 녹색 가산(OI 557.7nm) — 더 깊은 밤에 점증, 구름이 가림
+	# 대기광 녹색 가산(OI 557.7nm) — 더 깊은 밤에 점증, 구름이 가림.
+	# 크기 억제: 깊은 밤이 박명보다 밝아지면 비물리(밤이 가장 어두워야) → 미세하게만.
 	var airglow_t: float = smoothstep(14.0, 24.0, -elevation) * exp(-(cloud_props["tau"] as float) / 3.0)
-	floor_top += Color(0.006, 0.018, 0.008) * exp_norm * airglow_t
-	floor_hor += Color(0.010, 0.028, 0.012) * exp_norm * airglow_t
+	floor_top += Color(0.003, 0.009, 0.004) * exp_norm * airglow_t
+	floor_hor += Color(0.005, 0.014, 0.006) * exp_norm * airglow_t
 	# 바닥 적용: 달빛으로 base가 더 밝으면 base 유지(max), 아니면 바닥으로 안정화
 	night_top.r = maxf(night_top.r, floor_top.r)
 	night_top.g = maxf(night_top.g, floor_top.g)
