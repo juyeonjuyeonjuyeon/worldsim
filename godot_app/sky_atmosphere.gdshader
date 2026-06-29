@@ -27,9 +27,21 @@ const vec3  betaR = vec3(5.8e-6, 13.5e-6, 33.1e-6);
 // 값이 크면 태양 주변이 넓게 순백 폭발해 노을 색을 가림 → 적정값으로 축소.
 const vec3  betaM = vec3(6e-6);
 const float MieG  = 0.72;     // Mie 비대칭 인자 (전방산란, 낮을수록 덜 뾰족)
+// 오존 흡수계수 (Chappuis 밴드, /m) — 피크 ~600nm(주황). 실제 단면적 비
+// R(630nm):G(550nm):B(440nm) ≈ 4.5:3.1:0.5 → 빨강을 가장 많이 흡수, 파랑은 거의 통과.
+// 박명에 햇빛이 오존층을 긴 경로로 지나며 빨강·주황 제거 → 천정 깊은 파랑(블루아워) 창발.
+// 산란이 아닌 순수 흡수: 투과율(소광)에만 들어가고 in-scatter 광원엔 안 들어감.
+const vec3  betaO3 = vec3(2.6e-6, 1.8e-6, 0.29e-6);
+const float O3_CENTER = 25000.0;  // 오존층 중심 고도 (25km)
+const float O3_WIDTH  = 15000.0;  // 텐트 반폭 (10~40km, 25km 피크)
 const float SUN_I = 22.0;     // 태양 강도 (밝기 캘리브레이션)
 const int   VIEW_SAMPLES  = 16;
 const int   LIGHT_SAMPLES = 8;
+
+// 오존 밀도 프로파일 — 25km 중심 텐트(삼각형). 10km/40km에서 0, 25km에서 1.
+float ozone_density(float h) {
+	return max(0.0, 1.0 - abs(h - O3_CENTER) / O3_WIDTH);
+}
 
 // 광선-구 교차의 먼 쪽 t (원점이 구 내부 가정). 교차 없으면 -1.
 float ray_sphere_far(vec3 o, vec3 d, float r) {
@@ -54,7 +66,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 		/ ((2.0 + g * g) * pow(max(1.0 + g * g - 2.0 * g * mu, 1e-4), 1.5));
 
 	vec3 sumR = vec3(0.0), sumM = vec3(0.0);
-	float odR = 0.0, odM = 0.0;                    // 시선 경로 광학두께(카메라→샘플)
+	float odR = 0.0, odM = 0.0, odO = 0.0;         // 시선 경로 광학두께(카메라→샘플): R/M/오존
 
 	for (int i = 0; i < VIEW_SAMPLES; i++) {
 		vec3 p = ro + rd * (seg * (float(i) + 0.5));
@@ -62,11 +74,12 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 		float hr = exp(-h / Hr) * seg;
 		float hm = exp(-h / Hm) * seg;
 		odR += hr; odM += hm;
+		odO += ozone_density(h) * seg;             // 오존 흡수 경로 누적
 
 		// 이 샘플에서 태양까지의 광선 — 지구에 가리면(그림자) 빛 없음
 		float tl = ray_sphere_far(p, sun, Rt);
 		float segL = tl / float(LIGHT_SAMPLES);
-		float odLR = 0.0, odLM = 0.0;
+		float odLR = 0.0, odLM = 0.0, odLO = 0.0;
 		bool lit = true;
 		for (int j = 0; j < LIGHT_SAMPLES; j++) {
 			vec3 pl = p + sun * (segL * (float(j) + 0.5));
@@ -74,10 +87,14 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 			if (hl < 0.0) { lit = false; break; }  // 태양광이 지구에 막힘 → 그림자
 			odLR += exp(-hl / Hr) * segL;
 			odLM += exp(-hl / Hm) * segL;
+			odLO += ozone_density(hl) * segL;       // 태양 광선의 오존 경로(박명에 매우 길어짐)
 		}
 		if (lit) {
 			// 투과율 = exp(-(시선OD + 태양OD)·β). Mie 소광 ≈ 1.1× 산란.
-			vec3 tau = betaR * (odR + odLR) + betaM * mie_mul * 1.1 * (odM + odLM);
+			// 오존은 순수 흡수 → 소광에만 더함(산란 광원엔 없음).
+			vec3 tau = betaR * (odR + odLR)
+			         + betaM * mie_mul * 1.1 * (odM + odLM)
+			         + betaO3 * (odO + odLO);
 			vec3 att = exp(-tau);
 			sumR += att * hr;
 			sumM += att * hm;
