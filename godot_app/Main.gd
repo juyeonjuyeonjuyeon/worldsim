@@ -156,6 +156,8 @@ func _maybe_auto_screenshot() -> void:
 		rain_rate = 15.0
 	if args.has("--force-rainbow"):
 		_sky.force_rainbow(true)
+	if args.has("--blue-moon"):
+		_sky.trigger_blue_moon()
 	var ecl_pin: float = -1.0
 	var ecl_idx := args.find("--eclipse")
 	if ecl_idx >= 0 and ecl_idx + 1 < args.size():
@@ -292,6 +294,7 @@ func _on_test_event(event_name: String) -> void:
 		"comet":     _sky.trigger_comet_test()
 		"solar_eclipse":  _sky.trigger_eclipse("solar")
 		"lunar_eclipse":  _sky.trigger_eclipse("lunar")
+		"blue_moon":      _sky.trigger_blue_moon()
 		"aurora":         # 오로라 KP 이벤트 강제 발생 (latitude 50°+ 필요)
 			_sky._aurora_kp = randf_range(5.0, 9.0)
 			_sky._aurora_next_event = 300.0
