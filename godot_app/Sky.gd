@@ -296,6 +296,10 @@ func _build_sky_and_lights() -> void:
 	# sun_curve=0.1: 급격한 감쇠로 글로우를 태양 원반(0.53°) 근처에 집중
 	_sky_mat.sun_angle_max = 8.0
 	_sky_mat.sun_curve     = 0.1
+	# sky_curve=0.15(기본값)에서 blend 지수=6.67 → 고도 45°에서 sky_horizon 88% 적용 → 노을이 하늘 중간까지 번짐
+	# 0.45로 올리면 지수=2.22 → 고도 45°에서 sky_horizon 54%, 60°에서 27% → 노을이 지평선 부근에 집중
+	# 임시값(커스텀 Sky 셰이더 전환 전까지)
+	_sky_mat.sky_curve     = 0.45
 	sky.sky_material = _sky_mat
 	env.sky = sky
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
