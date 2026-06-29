@@ -9,6 +9,7 @@ const _EnvCls    = preload("res://Environment.gd")
 const _SoundCls  = preload("res://Sound.gd")
 const _CameraCls = preload("res://Camera.gd")
 const _UICls     = preload("res://UI.gd")
+const SkyMath    = preload("res://SkyMath.gd")  # 구간 보간 헬퍼 공용 (Sky.gd와 중복 제거)
 
 # ── 실제 기상학 기준값 ──
 # 광학두께(optical depth, τ)는 구름이 빛을 얼마나 막는지의 실제 물리량 —
@@ -317,10 +318,10 @@ func _weather_cloud_props() -> Dictionary:
 			var tau_o: float = lerp(TAU_OVERCAST_LIGHT, TAU_OVERCAST, overcast_intensity)
 			return {"tau": tau_o, "okta": OKTA_OVERCAST, "rain_rate": 0.0}
 		"RAIN":
-			var tau: float = _lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, RAIN_TAU_BREAKPOINTS)
+			var tau: float = SkyMath._lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, RAIN_TAU_BREAKPOINTS)
 			return {"tau": tau, "okta": clampf(0.85 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.85, 1.0), "rain_rate": rain_rate}
 		"SNOW":
-			var tau_s: float = _lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, SNOW_TAU_BREAKPOINTS)
+			var tau_s: float = SkyMath._lerp_breakpoints(rain_rate, RAIN_RATE_BREAKPOINTS, SNOW_TAU_BREAKPOINTS)
 			return {"tau": tau_s, "okta": clampf(0.80 + 0.15 * clampf(rain_rate / 30.0, 0.0, 1.0), 0.80, 1.0), "rain_rate": rain_rate}
 	return {"tau": 0.0, "okta": 0.0, "rain_rate": 0.0}
 
@@ -350,9 +351,9 @@ static func _estimate_temperature(month: int, day: int, hour_local: float, latit
 	var abs_lat: float      = abs(latitude)
 	# 경도 보정: 대륙성·해양성·몬순 지역별 연평균·계절진폭 보정
 	var bias: Dictionary    = _get_climate_bias(latitude, longitude, month)
-	var annual_mean: float  = _lerp_breakpoints(abs_lat, LAT_P, MEAN_P) + float(bias["mean_offset"])
-	var seasonal_amp: float = _lerp_breakpoints(abs_lat, LAT_P, AMP_P) * float(bias["amp_mult"])
-	var diurnal_amp: float  = _lerp_breakpoints(abs_lat, LAT_P, DIURNAL_P)
+	var annual_mean: float  = SkyMath._lerp_breakpoints(abs_lat, LAT_P, MEAN_P) + float(bias["mean_offset"])
+	var seasonal_amp: float = SkyMath._lerp_breakpoints(abs_lat, LAT_P, AMP_P) * float(bias["amp_mult"])
+	var diurnal_amp: float  = SkyMath._lerp_breakpoints(abs_lat, LAT_P, DIURNAL_P)
 	# 날짜 연속 월 — 월 경계를 매끄럽게 보간 (1일=month, 말일≈month+1)
 	var month_f: float = float(month) + float(day - 1) / 30.0
 	# 남반구: 6개월 계절 반전
@@ -573,11 +574,4 @@ static func _prevailing_wind_dir(latitude: float) -> float:
 		nh_dir = fmod(180.0 - nh_dir + 360.0, 360.0)
 	return nh_dir
 
-static func _lerp_breakpoints(x: float, xs: Array, ys: Array) -> float:
-	if x <= xs[0]:
-		return ys[0]
-	for i in range(xs.size() - 1):
-		if x <= xs[i + 1]:
-			var f: float = (x - xs[i]) / (xs[i + 1] - xs[i])
-			return lerp(ys[i], ys[i + 1], f)
-	return ys[ys.size() - 1]
+# 구간 선형 보간 헬퍼는 SkyMath.gd로 통합. SkyMath._lerp_breakpoints 참조.
