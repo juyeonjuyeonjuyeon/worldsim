@@ -746,8 +746,9 @@ void fragment() {
 	vec3 view_dir  = normalize(vert_os);
 	float ang = degrees(acos(clamp(dot(view_dir, antisolar), -1.0, 1.0)));
 
-	// 지평선 아래(view_dir.y<0)로 갈수록 빠르게 소멸
-	float horizon_fade = clamp(view_dir.y * 12.0 + 0.5, 0.0, 1.0);
+	// 지평선 클리핑: y=0(지평선)에서 정확히 0, 위로 약 3° 이내 부드러운 fade-in.
+	// 이전 +0.5 오프셋은 지평선에서도 50% 불투명해 무지개가 지면 아래로 번지는 원인이었음.
+	float horizon_fade = clamp(view_dir.y * 20.0, 0.0, 1.0);
 
 	// 과잉호 (Supernumerary arcs): 주무지개 안쪽 파동 간섭 줄무늬 (36°~40.6°)
 	// 실제 물리: 2개 경로 위상차 → 보강/상쇄 교대. 간격 ≈ 1.5° (작은 물방울 기준).
@@ -756,17 +757,17 @@ void fragment() {
 	float hue_s      = clamp((ang - 36.5) / 4.1, 0.0, 1.0);
 	vec3  col_super  = hue_to_rgb(0.55 - hue_s * 0.55) * pattern * super_zone * supernumerary_str;
 
-	// 1차(주) 무지개: 40.6°~42.5° (보라→빨강)
-	float band1 = smoothstep(40.2, 40.6, ang) * smoothstep(42.9, 42.5, ang);
+	// 1차(주) 무지개: 40.6°~42.5° (보라→빨강). smoothstep 전환 1.1° 폭으로 색 경계 부드럽게.
+	float band1 = smoothstep(39.5, 40.6, ang) * smoothstep(43.5, 42.5, ang);
 	float hue1  = clamp((ang - 40.6) / (42.5 - 40.6), 0.0, 1.0);
 	vec3  col1  = hue_to_rgb(0.75 - hue1 * 0.75) * band1;
 
 	// 알렉산더의 암대(42.5°~50.4°): blend_add 한계로 직접 어둡게는 불가.
 	// 두 호 사이에 빛이 추가되지 않아 상대적으로 어두운 띠가 자연스럽게 형성됨.
 
-	// 2차(부) 무지개: 50.4°~53.4° (빨강→보라, 색 순서 반대)
+	// 2차(부) 무지개: 50.4°~53.4° (빨강→보라, 색 순서 반대). 전환 폭 1° 확대.
 	// secondary_strength로 제어 (기본 0, 최대 0.10 = 주무지개의 10%)
-	float band2 = smoothstep(50.0, 50.4, ang) * smoothstep(53.8, 53.4, ang);
+	float band2 = smoothstep(49.4, 50.4, ang) * smoothstep(54.4, 53.4, ang);
 	float hue2  = clamp((ang - 50.4) / (53.4 - 50.4), 0.0, 1.0);
 	vec3  col2  = hue_to_rgb(hue2 * 0.75) * band2 * secondary_strength;
 
@@ -988,7 +989,10 @@ func _update_rainbow(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictiona
 
 	var target: float = clampf(elev_factor * droplet_air * sun_vis, 0.0, 1.0)
 	if _rainbow_force:
-		target = 1.0  # 강제 표시: 기상·태양 조건 무시
+		# 강제 표시: 기상 조건 무시. 단, 태양이 지평선 아래이면 antisolar가 지평선 위로
+		# 올라가 무지개가 거의 원 전체가 되므로 야간(sun_elev < 0)에는 강제 차단.
+		if sun_elev >= 1.0:
+			target = 1.0
 
 	# ── 부무지개: 최근 강수가 강했을 때(굵은 물방울)만 흐릿하게 출현 ──────
 	# EMA 기준 5mm/hr 이상 강수 이력이 있어야 2차 반사 확인 가능한 굵은 물방울
