@@ -1260,7 +1260,10 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# Layer A (elevation ≥ −2°): Preetham 분석 모델 — 손으로 색 지정 없음
 	# Layer B (elevation < −6°): 기존 야간 고정 색 유지 (night_top / night_horizon)
 	# 혼합구간 (−2° ∼ −6°): A → B 선형 보간
-	var hw_colors := _preetham_sky_colors(maxf(elevation, 0.0), 3.0)
+	# maxf(elevation, -6.0): 태양 -6° 이하는 어차피 야간색으로 전환 완료이므로 의미 없음.
+	# 이전 maxf(elevation, 0.0)은 박명(-6°~0°) 전 구간을 ts=90°(일몰 최대 붉음)로 고정해
+	# 일몰 직후에도 붉음이 잔류하는 문제 원인이었음. -6.0으로 변경해 박명을 자연스럽게 반영.
+	var hw_colors := _preetham_sky_colors(maxf(elevation, -6.0), 3.0)
 	var _dtn_t := clampf((-elevation - 2.0) / 4.0, 0.0, 1.0)
 	var top    : Color = (hw_colors[0] as Color).lerp(night_top,    _dtn_t)
 	var horizon: Color = (hw_colors[1] as Color).lerp(night_horizon, _dtn_t)
@@ -2107,8 +2110,10 @@ static func _preetham_sky_colors(sun_elev_deg: float, turbidity: float) -> Array
 	var f0yy := (1.0+A_yy*exp(B_yy))*(1.0+C_yy*exp(D_yy*ts)+E_yy*cos_ts*cos_ts)
 
 	# 지평선 샘플 (θ=89°, γ = π/2−ts : 태양 방향 기준 지평선)
+	# gm_h 하한 5°: ts→90°(태양 지평선)일 때 gm_h=0 → 최대 circumsolar glow가 되는
+	# 극단값을 방지. 이 하한은 D항(360° 균일 적용 한계)과 별개의 B항 완화 수단.
 	var th_h  := deg_to_rad(89.0)
-	var gm_h  := maxf(0.0, PI * 0.5 - ts)
+	var gm_h  := maxf(deg_to_rad(5.0), PI * 0.5 - ts)
 	var ct_h  := maxf(cos(th_h), 0.001)
 	var cg_h  := cos(gm_h)
 	var fhY  := (1.0+A_Y *exp(B_Y /ct_h))*(1.0+C_Y *exp(D_Y *gm_h)+E_Y *cg_h*cg_h)
