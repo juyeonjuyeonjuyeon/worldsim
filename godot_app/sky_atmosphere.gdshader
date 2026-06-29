@@ -67,7 +67,12 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 		* ((1.0 - g * g) * (1.0 + mu * mu))
 		/ ((2.0 + g * g) * pow(max(1.0 + g * g - 2.0 * g * mu, 1e-4), 1.5));
 
+	// 다중산란 가시도: 대기가 햇빛을 얼마나 받는지(태양 고도). 박명에 서서히 감소.
+	// 단일산란이 놓치는 2차+ 산란(등방 근사)을 이 가중치로 채움 → 박명 채움광·그림자 fill.
+	float sun_vis = smoothstep(-0.25, 0.06, sun.y);
+
 	vec3 sumR = vec3(0.0), sumM = vec3(0.0);
+	vec3 sumMS = vec3(0.0);                         // 등방 다중산란 누적(시선 투과만)
 	float odR = 0.0, odM = 0.0, odO = 0.0;         // 시선 경로 광학두께(카메라→샘플): R/M/오존
 
 	for (int i = 0; i < VIEW_SAMPLES; i++) {
@@ -77,6 +82,9 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 		float hm = exp(-h / Hm) * seg;
 		odR += hr; odM += hm;
 		odO += ozone_density(h) * seg;             // 오존 흡수 경로 누적
+		// 등방 다중산란: 그림자 무관(2차+ 산란은 사방에서 옴), 시선 투과율만 적용.
+		vec3 att_view = exp(-(betaR * odR + betaM * mie_mul * 1.1 * odM + betaO3 * odO));
+		sumMS += (hr * betaR + hm * betaM * mie_mul) * att_view;
 
 		// 이 샘플에서 태양까지의 광선 — 지구에 가리면(그림자) 빛 없음
 		float tl = ray_sphere_far(p, sun, Rt);
@@ -102,7 +110,11 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 			sumM += att * hm;
 		}
 	}
-	return SUN_I * (sumR * betaR * phaseR + sumM * betaM * mie_mul * phaseM);
+	// 단일산란 + 등방 다중산란(MS_FACTOR로 세기 조절, 위상 없음=등방)
+	const float MS_FACTOR = 0.035;
+	vec3 single = sumR * betaR * phaseR + sumM * betaM * mie_mul * phaseM;
+	vec3 multi  = sumMS * MS_FACTOR * sun_vis;
+	return SUN_I * (single + multi);
 }
 
 void sky() {
