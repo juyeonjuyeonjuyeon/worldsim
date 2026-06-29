@@ -146,6 +146,10 @@ func _maybe_auto_screenshot() -> void:
 	var day_idx := args.find("--day")
 	if day_idx >= 0 and day_idx + 1 < args.size():
 		sim_day = int(args[day_idx + 1])
+	var hum_force: float = -1.0
+	var hum_idx := args.find("--humidity")
+	if hum_idx >= 0 and hum_idx + 1 < args.size():
+		hum_force = float(args[hum_idx + 1])
 	var fixed_time: float = -999.0
 	var time_idx := args.find("--time")
 	if time_idx >= 0 and time_idx + 1 < args.size():
@@ -153,9 +157,11 @@ func _maybe_auto_screenshot() -> void:
 		time_of_day = fixed_time
 		# 노출 스무딩을 시간 고정 상태에서 수렴시킴 (검수 결정성 확보).
 		# 매 호출 elapsed 리셋 → 시간 드리프트 없이 delta만 공급.
+		# _env.humidity는 _env.update보다 _sky.update가 먼저 읽으므로 매 호출 전 강제.
 		for i in range(120):
 			elapsed_play_seconds = 0.0
 			time_of_day = fixed_time
+			if hum_force >= 0.0: _env.humidity = hum_force
 			_update_all(0.05)
 	var yaw_idx := args.find("--yaw")
 	if yaw_idx >= 0 and yaw_idx + 1 < args.size():
@@ -169,6 +175,7 @@ func _maybe_auto_screenshot() -> void:
 		if fixed_time > -900.0:
 			elapsed_play_seconds = 0.0
 			time_of_day = fixed_time
+		if hum_force >= 0.0: _env.humidity = hum_force
 		await get_tree().process_frame
 	var img: Image = get_viewport().get_texture().get_image()
 	img.save_png(out_path)
@@ -320,7 +327,7 @@ func _update_all(delta: float) -> void:
 		_sound.lightning_bolt_dist_km,
 		dt, hour_utc, latitude, longitude,
 		sim_temperature, _env.ground_wetness, delta,
-		_camera.eye_view)
+		_camera.eye_view, _env.humidity)
 
 	var _cam_pos: Vector3 = _camera.get_camera().global_position
 	_env.update(

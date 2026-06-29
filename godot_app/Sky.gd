@@ -789,9 +789,17 @@ func update(
 	temperature: float,
 	ground_wetness: float,
 	delta: float,
-	eye_view: bool = true
+	eye_view: bool = true,
+	humidity: float = 50.0
 ) -> void:
 	_eye_view = eye_view
+	# ── 대기 혼탁도(Mie 산란) 물리 창발: 흡습성 에어로졸 성장 ─────────────────
+	# 상대습도가 높을수록 에어로졸이 수분을 흡수해 팽창 → Mie 산란 급증(haze).
+	# f(RH) ≈ (1−RH)^−0.6 (deliquescence 근사). RH는 위도·계절·날씨에서 이미 창발하므로
+	# 혼탁도도 자동으로 그에 맞게 변함(맑고 건조→청명 진파랑, 습함→뿌연 흰 하늘·큰 글로우).
+	var rh: float = clampf(humidity / 100.0, 0.0, 0.96)
+	var turbidity: float = clampf(1.8 * pow(1.0 - rh, -0.6), 1.6, 10.0)
+	_sky_mat.set_shader_parameter("u_turbidity", turbidity)
 	_update_sky_and_lights(sun_altaz, moon, cloud_props, lightning_flash, delta)
 	_update_stars(dt, hour_utc, latitude, longitude, cloud_props)
 	_update_planets(sun_altaz, dt, hour_utc, latitude, longitude, cloud_props)
