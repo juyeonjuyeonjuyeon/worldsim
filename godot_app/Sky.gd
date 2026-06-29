@@ -75,6 +75,10 @@ var _meteor_color: Color   = Color.WHITE
 var _shower_intensity: float  = 0.0        # 현재 유성우 강도 (0=없음, 1=피크)
 var _shower_radiant:  Vector3 = Vector3.UP # 복사점 방향 (단위 벡터)
 var _comet_test_mode: bool    = false      # 테스트 버튼으로 혜성 강제 표시
+# ── 일식·월식 ──
+var _eclipse_test: String = ""   # ""=자연발생만, "solar"/"lunar"=데모 강제
+var _eclipse_test_t: float = 0.0 # 강제 데모 진행도(0→1→0 애니메이션)
+var eclipse_status: String = ""  # Main.gd가 읽어 상태표시줄에 표시
 var _comet_nuc_inst:  MeshInstance3D       # 혜성 핵
 var _comet_nuc_mat:   ShaderMaterial
 var _comet_ion_mesh:  ImmediateMesh        # 이온 꼬리 (청백, 직선)
@@ -124,6 +128,14 @@ func trigger_comet_test() -> void:
 		_comet_nuc_inst.visible  = false
 		_comet_ion_inst.visible  = false
 		_comet_dust_inst.visible = false
+
+# 일식/월식 데모 강제 (실제 정렬은 드물어 검증·시연용). type: "solar"/"lunar".
+func trigger_eclipse(type: String) -> void:
+	if _eclipse_test == type:
+		_eclipse_test = ""   # 토글 해제
+	else:
+		_eclipse_test = type
+		_eclipse_test_t = 0.0
 
 func _load_star_catalog() -> void:
 	var f := FileAccess.open("res://stars.json", FileAccess.READ)
@@ -205,6 +217,8 @@ uniform float brightness : hint_range(0.0, 10.0) = 2.0;
 uniform float exposure_safe : hint_range(0.0, 1.0) = 1.0;
 uniform float cloud_fade    : hint_range(0.0, 1.0) = 1.0;
 uniform float horizon_fade  : hint_range(0.0, 1.0) = 1.0;
+// 월식(블러드문): 0=정상, 1=본영 완전진입. 지구 대기로 굴절된 붉은빛만 → 어두운 구릿빛.
+uniform float eclipse_red   : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 world_normal;
 varying float v_world_dir_y;
@@ -224,6 +238,9 @@ void fragment() {
 	// 구름을 통과할수록 달빛이 파랗고 희게 산란됨
 	vec3 cloud_white = vec3(0.78, 0.82, 0.98) * exposure_safe;
 	bright_col = mix(bright_col, cloud_white, (1.0 - cloud_fade) * 0.8);
+	// 월식: 본영에 들수록 어두운 구릿빛 적색(지구 대기 굴절광)으로 수렴
+	vec3 blood = vec3(0.45, 0.11, 0.05) * brightness * exposure_safe;
+	bright_col = mix(bright_col, blood, eclipse_red);
 	ALBEDO = bright_col;
 	// 수평선 클립: 카메라 기준 실제 지평선에서 달을 자름 (±0.005 ≈ ±0.29° 전환)
 	float ground_fade = smoothstep(-0.005, 0.005, v_world_dir_y);
@@ -260,6 +277,11 @@ uniform float green_flash   : hint_range(0.0, 1.0)   = 0.0;
 // 노출 보정(=1/노출, ≤1) — 일몰 시 노출↑로 태양 글레어가 순백 폭발하는 것 방지.
 // 달 메시와 동일 방식. 미적용 시 노을이 흰색에 묻힘.
 uniform float exposure_safe : hint_range(0.0, 1.0)   = 1.0;
+// 일식: 달이 태양면을 가림. moon_uv=달 중심(dvec 좌표), moon_r=달 각반경(dvec).
+// total=개기 근접도(0~1) → 코로나 표시. 평상시 moon_uv는 화면 밖(99).
+uniform vec2  eclipse_moon_uv = vec2(99.0, 99.0);
+uniform float eclipse_moon_r  = 0.0;
+uniform float eclipse_total   = 0.0;
 
 varying float v_world_dir_y;
 
@@ -272,10 +294,16 @@ void vertex() {
 }
 
 void fragment() {
-	float d = length(UV - vec2(0.5)) * 2.0;
+	vec2 dvec = (UV - vec2(0.5)) * 2.0;
+	float d = length(dvec);
 
 	// 원반: 물리 각지름 0.53° = d=0.103 in 9m quad
 	float disc = 1.0 - smoothstep(0.103, 0.115, d);
+
+	// 일식: 달 원반이 태양면을 가림 (occ=1 → 달 안쪽, 광구 차단)
+	float moon_d = length(dvec - eclipse_moon_uv);
+	float occ = 1.0 - smoothstep(eclipse_moon_r, eclipse_moon_r + 0.012, moon_d);
+	disc *= (1.0 - occ);
 
 	// 방사형 마스크: d≥1.0에서 완전 0 → 사각 경계 제거
 	float rmask = 1.0 - smoothstep(0.86, 1.0, d);
@@ -284,7 +312,9 @@ void fragment() {
 	// 메시 글레어는 디스크 주변 좁은 광환만 담당(이중 글로우·순백 폭발 방지).
 	float core = exp(-max(0.0, d - 0.10) * (11.0 / glare_scale)) * (1.0 * glare_scale);
 	float halo = exp(-d * (3.2 / glare_scale)) * (0.14 * glare_scale);
-	float glow = (core + halo) * rmask;
+	float glow = (core + halo) * rmask * (1.0 - occ * 0.92);   // 가려진 만큼 글레어도 약화
+	// 개기일식 코로나: 달 가장자리 바깥 진주빛 고리 (개기 근접 시만)
+	float corona = exp(-max(0.0, d - eclipse_moon_r) * 6.0) * (1.0 - occ) * eclipse_total * 0.5 * rmask;
 
 	// 지평선 클립: 카메라 기준 실제 수평선에서 자름
 	// ±0.005 ≈ ±0.29° 전환 대역 (디스크 반경 0.265°보다 약간 넓어 앤티앨리어싱)
@@ -298,10 +328,12 @@ void fragment() {
 	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t) * exposure_safe * 2.2;
 	// 녹색 섬광: 디스크 원반만 초록/청록으로 혼합
 	ALBEDO = mix(ALBEDO, vec3(0.15, 0.90, 0.55) * exposure_safe * 2.2, disc * green_flash);
+	// 코로나: 진주빛 흰색 가산
+	ALBEDO += vec3(0.9, 0.92, 1.0) * exposure_safe * 2.2 * corona;
 
 	// horizon_fade: 고도 −3°→+1° smoothstep (대기 감쇠 / haze_t 연동)
 	// ground_fade: 카메라 수평선 기준 지평면 절단
-	ALPHA = clamp((disc + glow) * cloud_fade * horizon_fade * ground_fade, 0.0, 1.0);
+	ALPHA = clamp((disc + glow + corona) * cloud_fade * horizon_fade * ground_fade, 0.0, 1.0);
 }
 """
 	_sun_shader_mat = ShaderMaterial.new()
@@ -1006,6 +1038,43 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var moon_dir: Vector3 = SkyMath._altaz_to_dir(moon_alt, moon_az)
 	_moon_light.global_transform = Transform3D(Basis.looking_at(-moon_dir, Vector3.UP), Vector3.ZERO)
 	_moon_mesh.global_position = cam_origin + moon_dir * 100.0
+
+	# ── 일식·월식 기하 (태양·달 방향의 각분리에서 창발) ────────────────────
+	# 데모 강제 진행(0→1) — 실제 정렬은 드물어 시연·검증용
+	if _eclipse_test != "":
+		_eclipse_test_t = minf(_eclipse_test_t + delta * 0.15, 1.0)
+	else:
+		_eclipse_test_t = 0.0
+	# 일식 데모: 달을 태양 앞으로 이동(t=1→완전 정렬, 작은 오프셋으로 크레센트 표현)
+	if _eclipse_test == "solar":
+		var off_ang: float = deg_to_rad((1.0 - _eclipse_test_t) * 0.55 + 0.015)
+		var rot_axis: Vector3 = sun_dir.cross(Vector3.UP).normalized()
+		if rot_axis.length() < 0.1: rot_axis = Vector3.RIGHT
+		moon_dir = sun_dir.rotated(rot_axis, off_ang)
+		moon_alt = rad_to_deg(asin(clampf(moon_dir.y, -1.0, 1.0)))
+		_moon_mesh.global_position = cam_origin + moon_dir * 100.0
+	# 각반경(도): 태양 0.265, 달 0.259, 지구 본영(달거리) 0.68.
+	var sun_moon_dot: float  = clampf(sun_dir.dot(moon_dir), -1.0, 1.0)
+	var solar_sep: float     = rad_to_deg(acos(sun_moon_dot))          # 태양~달
+	var lunar_sep: float     = rad_to_deg(acos(clampf(-sun_moon_dot, -1.0, 1.0)))  # 반태양~달
+	# 월식: 달이 본영에 든 정도(보름·야간 자동 — 반태양 근처여야 성립)
+	var lunar_red: float = 0.0
+	if moon_alt > -2.0:
+		lunar_red = clampf((0.68 + 0.259 - lunar_sep) / (2.0 * 0.259), 0.0, 1.0)
+	if _eclipse_test == "lunar":
+		lunar_red = maxf(lunar_red, _eclipse_test_t)
+	# 일식: 달이 태양을 가린 정도(낮·신월 자동)
+	var solar_cover: float = 0.0
+	if elevation > -1.0 and moon_alt > -2.0:
+		solar_cover = clampf((0.265 + 0.259 - solar_sep) / (2.0 * minf(0.265, 0.259)), 0.0, 1.0)
+	if _eclipse_test == "solar":
+		solar_cover = maxf(solar_cover, _eclipse_test_t)
+	# 상태 문자열
+	eclipse_status = ""
+	if lunar_red > 0.02:
+		eclipse_status = "개기월식 (블러드문)" if lunar_red > 0.98 else "부분월식"
+	elif solar_cover > 0.02:
+		eclipse_status = ("개기일식" if solar_cover > 0.98 else "부분일식")
 	# 달 지평선 페이드: −3°→+1° smoothstep, 위치 계산은 그대로, 가시성만 조절
 	var moon_horizon_fade: float = smoothstep(-3.0, 1.0, moon_alt)
 	_moon_mesh.visible = moon_alt > -3.5
@@ -1023,6 +1092,7 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 달 기본 색온도 ≈ 4300K (약간 따뜻한 회백) — 천정 기준
 	var moon_lit_c := Vector3(1.0, 0.98 * ray_g / rnorm, 0.92 * ray_b / rnorm)
 	_moon_shader_mat.set_shader_parameter("lit_color", moon_lit_c)
+	_moon_shader_mat.set_shader_parameter("eclipse_red", lunar_red)
 	# DirectionalLight: 달빛 색온도 ≈ 4100K (청백), 고도따라 레일리 적화
 	_moon_light.light_color = Color(0.88 * ray_r / rnorm, 0.90 * ray_g / rnorm, ray_b / rnorm)
 
@@ -1047,6 +1117,19 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 태양 원반 색을 DirectionalLight 색과 동기화 (지평선=주황, 상공=흰색)
 	_sun_shader_mat.set_shader_parameter("sun_color", Vector3(sun_color.r, sun_color.g, sun_color.b))
 
+	# 일식: 달 원반 위치를 태양 빌보드 좌표(dvec)로 투영해 셰이더에 전달
+	if solar_cover > 0.001:
+		var cam_b: Basis = sky_cam.global_transform.basis if is_instance_valid(sky_cam) else Basis.IDENTITY
+		var rel: Vector3 = (moon_dir - sun_dir) * 100.0
+		# 빌보드 로컬축 = 카메라 right(x)/up(y). dvec = 뷰오프셋(m)/4.5 (quad 반폭)
+		var moon_uv := Vector2(rel.dot(cam_b.x), rel.dot(cam_b.y)) / 4.5
+		_sun_shader_mat.set_shader_parameter("eclipse_moon_uv", moon_uv)
+		_sun_shader_mat.set_shader_parameter("eclipse_moon_r", 0.100)   # 달 각반경→dvec
+		_sun_shader_mat.set_shader_parameter("eclipse_total", smoothstep(0.85, 1.0, solar_cover))
+	else:
+		_sun_shader_mat.set_shader_parameter("eclipse_moon_uv", Vector2(99.0, 99.0))
+		_sun_shader_mat.set_shader_parameter("eclipse_total", 0.0)
+
 	# ── 녹색 섬광 (Green Flash) ─────────────────────────────────────────
 	# 태양이 지평선을 느리게 횡단 + 맑은 하늘 조건에서 1회 점등
 	var _gf_crossing: bool = ((_prev_sun_elev > 0.15 and elevation < 0.15) or
@@ -1060,6 +1143,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_sun_shader_mat.set_shader_parameter("green_flash", _green_flash_t)
 
 	var sun_lux: float  = SkyMath._sun_illuminance(elevation)
+	# 일식: 가려진 만큼 직사 조도 감소 → 노출이 박명 수준으로 적응, 지면 어두워짐.
+	sun_lux *= (1.0 - solar_cover * 0.985)
 	var moon_lux: float = 0.0
 	if moon_alt > 0.0:
 		# 반대현상(opposition effect) + 위상 비선형성:
@@ -1166,6 +1251,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		Vector3(night_horizon.r, night_horizon.g, night_horizon.b))
 	# 주간 하늘 노출 독립화용 — 셰이더가 sky_col÷u_exposure 하여 tonemap×exposure 상쇄
 	_sky_mat.set_shader_parameter("u_exposure", exposure_mult)
+	# 일식: 가려진 만큼 산란 하늘을 어둡게(개기 시 박명같은 어두운 하늘 + 코로나·별)
+	_sky_mat.set_shader_parameter("u_sun_intensity", 1.0 - solar_cover * 0.97)
 	# 안개 색 저장용 (fog 계산에서 참조)
 	_fog_horizon_color = night_horizon
 

@@ -13,6 +13,8 @@ uniform float u_overcast_amt : hint_range(0.0, 1.0) = 0.0;
 uniform float u_lightning : hint_range(0.0, 1.0) = 0.0;
 // 현재 tonemap 노출 배율 — 하늘을 노출 독립화(÷노출 후 tonemap×노출이 상쇄)
 uniform float u_exposure = 1.0;
+// 태양 유효 강도 배율 (일식 시 1→0으로 낮춰 하늘이 어두워짐). 평상시 1.
+uniform float u_sun_intensity = 1.0;
 
 // ── 단일산란 대기 모델 (Nishita/Bruneton류) ──────────────────────────────
 // 시선 광선을 대기에서 ray-march, 각 샘플에서 태양까지 광선이 지구에 가리는지
@@ -113,7 +115,7 @@ void sky() {
 	float mie_mul = u_turbidity / 3.0;   // 혼탁도 → Mie 강도
 
 	// ── 산란된 햇빛 (낮+박명 창발) ── 노출 독립화
-	vec3 sky_col = atmosphere(ro, eye_above, sun, mie_mul) / max(u_exposure, 0.001);
+	vec3 sky_col = atmosphere(ro, eye_above, sun, mie_mul) * u_sun_intensity / max(u_exposure, 0.001);
 
 	// ── 야간 배경광 (별빛+영구 대기광) ── GDScript에서 ÷노출(exp_norm) 적용됨.
 	// 물리적으로 항상 존재하는 가산 성분: 낮엔 산란광에 묻히고, 산란광이 박명에

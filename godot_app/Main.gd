@@ -156,6 +156,14 @@ func _maybe_auto_screenshot() -> void:
 		rain_rate = 15.0
 	if args.has("--force-rainbow"):
 		_sky.force_rainbow(true)
+	var ecl_pin: float = -1.0
+	var ecl_idx := args.find("--eclipse")
+	if ecl_idx >= 0 and ecl_idx + 1 < args.size():
+		_sky.trigger_eclipse(args[ecl_idx + 1])   # "solar"/"lunar"
+		ecl_pin = 1.0
+		var ecl_t_idx := args.find("--eclipse-t")
+		if ecl_t_idx >= 0 and ecl_t_idx + 1 < args.size():
+			ecl_pin = float(args[ecl_t_idx + 1])
 	if args.has("--constellations"):
 		show_constellations = true
 		show_trails = true
@@ -174,6 +182,7 @@ func _maybe_auto_screenshot() -> void:
 			elapsed_play_seconds = 0.0
 			time_of_day = fixed_time
 			if hum_force >= 0.0: _env.humidity = hum_force
+			if ecl_pin >= 0.0: _sky._eclipse_test_t = ecl_pin
 			_update_all(0.05)
 	var yaw_idx := args.find("--yaw")
 	if yaw_idx >= 0 and yaw_idx + 1 < args.size():
@@ -188,6 +197,7 @@ func _maybe_auto_screenshot() -> void:
 			elapsed_play_seconds = 0.0
 			time_of_day = fixed_time
 		if hum_force >= 0.0: _env.humidity = hum_force
+		if ecl_pin >= 0.0: _sky._eclipse_test_t = ecl_pin
 		await get_tree().process_frame
 	var img: Image = get_viewport().get_texture().get_image()
 	img.save_png(out_path)
@@ -280,9 +290,8 @@ func _on_test_event(event_name: String) -> void:
 		"meteor":    _sky.trigger_meteor(false)
 		"shower":    _sky.trigger_meteor(true)
 		"comet":     _sky.trigger_comet_test()
-		# TODO Phase 1: 특수현상 — 효과 미구현
-		"solar_eclipse":  push_warning("TODO solar_eclipse: 일식 셰이더 미구현 (Phase 1)")
-		"lunar_eclipse":  push_warning("TODO lunar_eclipse: 월식 붉은달 셰이더 미구현 (Phase 1)")
+		"solar_eclipse":  _sky.trigger_eclipse("solar")
+		"lunar_eclipse":  _sky.trigger_eclipse("lunar")
 		"aurora":         # 오로라 KP 이벤트 강제 발생 (latitude 50°+ 필요)
 			_sky._aurora_kp = randf_range(5.0, 9.0)
 			_sky._aurora_next_event = 300.0
@@ -362,7 +371,10 @@ func _update_all(delta: float) -> void:
 		var temp_disp: String = ("%.1f°F" % (sim_temperature * 9.0 / 5.0 + 32.0)) if use_fahrenheit \
 			else ("%.1f°C" % sim_temperature)
 		var hum_str: String = "습도 %.0f%%" % _env.humidity
-		var evt_str: String = ("  |  " + _sky.planet_events) if _sky.planet_events != "" else ""
+		var evt_parts: String = _sky.planet_events
+		if _sky.eclipse_status != "":
+			evt_parts = (_sky.eclipse_status + "  " + evt_parts) if evt_parts != "" else _sky.eclipse_status
+		var evt_str: String = ("  |  " + evt_parts) if evt_parts != "" else ""
 		_ui.update_status("%04d-%02d-%02d  %02d:%02d  |  %s  %s  |  %s  %s%s%s" % [
 			dt["year"], dt["month"], dt["day"], h, m, lat_str, lng_str,
 			temp_disp, hum_str, evt_str, pause_tag])
