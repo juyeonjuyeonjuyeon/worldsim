@@ -257,6 +257,9 @@ uniform float horizon_fade  : hint_range(0.0, 1.0)   = 1.0;
 uniform float glare_scale   : hint_range(0.5, 2.0)   = 1.0;
 // 녹색 섬광: 지평선 횡단 순간 디스크를 초록/청록으로 잠시 변색 (0=없음)
 uniform float green_flash   : hint_range(0.0, 1.0)   = 0.0;
+// 노출 보정(=1/노출, ≤1) — 일몰 시 노출↑로 태양 글레어가 순백 폭발하는 것 방지.
+// 달 메시와 동일 방식. 미적용 시 노을이 흰색에 묻힘.
+uniform float exposure_safe : hint_range(0.0, 1.0)   = 1.0;
 
 varying float v_world_dir_y;
 
@@ -277,9 +280,10 @@ void fragment() {
 	// 방사형 마스크: d≥1.0에서 완전 0 → 사각 경계 제거
 	float rmask = 1.0 - smoothstep(0.86, 1.0, d);
 
-	// 글로우: glare_scale이 광환 범위·밝기 결정
-	float core = exp(-max(0.0, d - 0.10) * (7.0 / glare_scale)) * (1.5 * glare_scale);
-	float halo = exp(-d * (1.3 / glare_scale)) * (0.55 * glare_scale);
+	// 글로우: 태양 주변 넓은 글로우는 이제 대기 산란(셰이더)이 물리적으로 생성하므로
+	// 메시 글레어는 디스크 주변 좁은 광환만 담당(이중 글로우·순백 폭발 방지).
+	float core = exp(-max(0.0, d - 0.10) * (11.0 / glare_scale)) * (1.0 * glare_scale);
+	float halo = exp(-d * (3.2 / glare_scale)) * (0.14 * glare_scale);
 	float glow = (core + halo) * rmask;
 
 	// 지평선 클립: 카메라 기준 실제 수평선에서 자름
@@ -289,9 +293,11 @@ void fragment() {
 	// 대기 헤이즈: 지평선 근처에서 outer glow를 따뜻한 주황으로 블렌딩
 	float haze_t     = clamp((1.0 - horizon_fade) * 1.5, 0.0, 1.0);
 	float outer_frac = clamp((d - 0.10) * 3.0, 0.0, 1.0);
-	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t);
+	// 노출 독립화: ×exposure_safe 후 Environment tonemap(×노출)이 상쇄 → 노출 무관 일정.
+	// ×2.2: 원반은 토널 상한을 넘겨 밝은 흰 디스크로 클립, 광환은 비례 약화.
+	ALBEDO = mix(sun_color, haze_color, outer_frac * haze_t) * exposure_safe * 2.2;
 	// 녹색 섬광: 디스크 원반만 초록/청록으로 혼합
-	ALBEDO = mix(ALBEDO, vec3(0.15, 0.90, 0.55), disc * green_flash);
+	ALBEDO = mix(ALBEDO, vec3(0.15, 0.90, 0.55) * exposure_safe * 2.2, disc * green_flash);
 
 	// horizon_fade: 고도 −3°→+1° smoothstep (대기 감쇠 / haze_t 연동)
 	// ground_fade: 카메라 수평선 기준 지평면 절단
@@ -1073,6 +1079,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 
 	sky_brightness_safe = min(1.0, 1.0 / exposure_mult)
 	_moon_shader_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
+	# 태양 메시도 동일 노출 보정 — 일몰 노출↑에 글레어가 순백 폭발하지 않게
+	_sun_shader_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
 
 	# ── 사람눈/카메라 모드 분기 ───────────────────────────────────────────
 	_sun_shader_mat.set_shader_parameter("glare_scale", 1.5 if _eye_view else 0.8)

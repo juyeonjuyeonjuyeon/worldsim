@@ -23,9 +23,10 @@ const float Hr = 7994.0;      // Rayleigh 밀도 척도고도 (8km)
 const float Hm = 1200.0;      // Mie 밀도 척도고도 (1.2km)
 // Rayleigh 산란계수 (파장별, /m) — 청색이 가장 강함 → 낮 하늘 파랑, 일몰 빨강
 const vec3  betaR = vec3(5.8e-6, 13.5e-6, 33.1e-6);
-// Mie 산란계수 (파장 무관, 에어로졸) — 전방산란으로 태양 주변 흰 광환
-const vec3  betaM = vec3(21e-6);
-const float MieG  = 0.76;     // Mie 비대칭 인자 (전방산란)
+// Mie 산란계수 (파장 무관, 에어로졸) — 전방산란으로 태양 주변 흰 광환.
+// 값이 크면 태양 주변이 넓게 순백 폭발해 노을 색을 가림 → 적정값으로 축소.
+const vec3  betaM = vec3(6e-6);
+const float MieG  = 0.72;     // Mie 비대칭 인자 (전방산란, 낮을수록 덜 뾰족)
 const float SUN_I = 22.0;     // 태양 강도 (밝기 캘리브레이션)
 const int   VIEW_SAMPLES  = 16;
 const int   LIGHT_SAMPLES = 8;
