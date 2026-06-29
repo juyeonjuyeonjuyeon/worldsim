@@ -137,20 +137,35 @@ func _maybe_auto_screenshot() -> void:
 	if idx < 0:
 		return
 	var out_path: String = "user://auto_screenshot.png" if idx + 1 >= args.size() else args[idx + 1]
+	var fixed_time: float = -999.0
 	var time_idx := args.find("--time")
 	if time_idx >= 0 and time_idx + 1 < args.size():
-		time_of_day = float(args[time_idx + 1])
-		_update_all(0.0)
+		fixed_time = float(args[time_idx + 1])
+		time_of_day = fixed_time
+		# 노출 스무딩을 시간 고정 상태에서 수렴시킴 (검수 결정성 확보).
+		# 매 호출 elapsed 리셋 → 시간 드리프트 없이 delta만 공급.
+		for i in range(120):
+			elapsed_play_seconds = 0.0
+			time_of_day = fixed_time
+			_update_all(0.05)
 	var yaw_idx := args.find("--yaw")
 	if yaw_idx >= 0 and yaw_idx + 1 < args.size():
 		_camera._yaw = deg_to_rad(float(args[yaw_idx + 1]))
 	var pitch_idx := args.find("--pitch")
 	if pitch_idx >= 0 and pitch_idx + 1 < args.size():
 		_camera._pitch = deg_to_rad(float(args[pitch_idx + 1]))
-	await get_tree().create_timer(3.0).timeout
+	_camera.update(0.0)   # yaw/pitch 즉시 반영
+	# 시간 고정 유지하며 여러 프레임 렌더 (하늘 radiance/노출 안정화)
+	for _i in range(20):
+		if fixed_time > -900.0:
+			elapsed_play_seconds = 0.0
+			time_of_day = fixed_time
+		await get_tree().process_frame
 	var img: Image = get_viewport().get_texture().get_image()
 	img.save_png(out_path)
 	print("AUTO SCREENSHOT: " + out_path)
+	if OS.has_environment("SKYDBG"):
+		print("CAPSTATE time=%.3f elapsed=%.2f exp_safe=%.5f" % [time_of_day, elapsed_play_seconds, _sky.sky_brightness_safe])
 	# 하늘 색 진단: 우측 청천 컬럼(x=0.78W)을 천정→지평선으로 샘플링 (sRGB 0–255)
 	var w: int = img.get_width()
 	var h: int = img.get_height()

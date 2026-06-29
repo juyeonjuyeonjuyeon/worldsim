@@ -1099,12 +1099,28 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		0.00085 * moon_sky_factor * scotopic_g * exp_norm,
 		0.00140 * moon_sky_factor * scotopic_b * exp_norm)
 
-	# ── 대기광 (Airglow): 중간권 화학 발광 — 야간 깊을수록 미묘한 녹색 조 ─
-	# OI 557.7 nm (원자산소), OH 밴드가 주 기여. 맑은 밤에만 보임.
-	var airglow_t: float = clampf((-elevation - 18.0) / 8.0, 0.0, 1.0)
-	airglow_t *= exp(-(cloud_props["tau"] as float) / 3.0)
-	night_horizon += Color(0.003, 0.012, 0.005) * airglow_t
-	night_top     += Color(0.001, 0.005, 0.002) * airglow_t
+	# ── 야간 자연 배경광 바닥 (별빛 산란 + 영구 대기광 + 황도광 합) ──────────
+	# 무월 청천도 완전 검정이 아니다(~21.5 mag/arcsec²). 두 가지 이유로 바닥이 필요:
+	#  (1) 물리: 영구 대기광(OI 557.7nm 녹색)+은하 별빛 Rayleigh 산란+황도광이 항상 존재.
+	#  (2) 렌더: night_* 가 ×16 노출 후 Filmic toe(흑색 절벽)에 걸려 미세 차이로 0↔28
+	#      깜빡임 발생. 바닥을 toe 위로 올려 안정적 dark-blue 유지.
+	# van Rhijn: 지평선이 천정보다 밝음(시선이 발광층을 더 긴 경로로 통과).
+	# exp_norm 공유 → night_* 와 동일 노출 스케일(노출 독립).
+	var deep_t: float = smoothstep(10.0, 18.0, -elevation)   # 천문박명 진입부터 점증
+	# 청백 별빛/산란 바닥 — Rayleigh로 청색 우세 (Filmic toe 위로 올려 안정화)
+	var floor_top := Color(0.10, 0.12, 0.19) * exp_norm * deep_t
+	var floor_hor := Color(0.13, 0.15, 0.22) * exp_norm * deep_t   # 지평선 더 밝음
+	# 대기광 녹색 가산(OI 557.7nm) — 더 깊은 밤에 점증, 구름이 가림
+	var airglow_t: float = smoothstep(14.0, 24.0, -elevation) * exp(-(cloud_props["tau"] as float) / 3.0)
+	floor_top += Color(0.02, 0.06, 0.025) * exp_norm * airglow_t
+	floor_hor += Color(0.03, 0.09, 0.04) * exp_norm * airglow_t
+	# 바닥 적용: 달빛으로 base가 더 밝으면 base 유지(max), 아니면 바닥으로 안정화
+	night_top.r = maxf(night_top.r, floor_top.r)
+	night_top.g = maxf(night_top.g, floor_top.g)
+	night_top.b = maxf(night_top.b, floor_top.b)
+	night_horizon.r = maxf(night_horizon.r, floor_hor.r)
+	night_horizon.g = maxf(night_horizon.g, floor_hor.g)
+	night_horizon.b = maxf(night_horizon.b, floor_hor.b)
 
 	# ── 하늘 색: 커스텀 Sky 셰이더(sky_atmosphere.gdshader)에서 픽셀별 Preetham 계산 ──
 	# uniform으로 태양 방향·야간 색·overcast 전달 → 셰이더가 방향성 있는 산란을 직접 계산
