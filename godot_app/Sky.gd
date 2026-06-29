@@ -1241,8 +1241,10 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var scotopic_boost: float = 1.0 + scotopic_w * 3.0   # 1× → 4× 연속
 
 	# ── 밤하늘 기본색 (moon_sky_factor: 보름달=2.5×) ─────────────────────
-	# ProceduralSkyMaterial은 tonemap_exposure 보정을 받지 않음 → brt 제거, 표시값 직접 지정
-	# * 16.0: 표시용 밝기 스케일 (brt=1일 때의 기존 값과 동일)
+	# ProceduralSkyMaterial은 Godot 4 HDR 프레임버퍼에 들어가 동일한 tonemap 패스를 거친다.
+	# 기존 * 16.0은 "sky는 tonemap 면제"라는 잘못된 가정으로 추가됐으나,
+	# tonemap_exposure = exposure_mult (최대 16×)가 sky에도 적용되어 256× 이중곱이 됐음.
+	# * 16.0 제거 → tonemap_exposure 단일 경로가 적절한 밝기 보정을 담당한다.
 	var moon_sky_factor: float = 1.0 + clampf(moon_lux / 0.27, 0.0, 1.0) * 1.5
 	# CIE 1951 스코토픽 V'(λ): 507nm 피크 → R×0.80, G×0.90, B×1.15 근사 (scotopic_w=1 시)
 	var scotopic_r: float = scotopic_boost * (1.0 - scotopic_w * 0.20)
@@ -1251,11 +1253,11 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var night_top := Color(
 		0.00190 * moon_sky_factor * scotopic_r,
 		0.00218 * moon_sky_factor * scotopic_g,
-		0.00358 * moon_sky_factor * scotopic_b) * 16.0
+		0.00358 * moon_sky_factor * scotopic_b)
 	var night_horizon := Color(
 		0.00080 * moon_sky_factor * scotopic_r,
 		0.00085 * moon_sky_factor * scotopic_g,
-		0.00140 * moon_sky_factor * scotopic_b) * 16.0
+		0.00140 * moon_sky_factor * scotopic_b)
 
 	# ── 대기광 (Airglow): 중간권 화학 발광 — 야간 깊을수록 미묘한 녹색 조 ─
 	# OI 557.7 nm (원자산소), OH 밴드가 주 기여. 맑은 밤에만 보임.
