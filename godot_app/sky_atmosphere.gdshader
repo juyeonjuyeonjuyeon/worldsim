@@ -11,9 +11,12 @@ uniform vec3 u_night_horizon = vec3(0.00080, 0.00085, 0.00140);
 uniform float u_overcast_amt : hint_range(0.0, 1.0) = 0.0;
 // 번개 플래시 강도 (0=없음, 1=최대)
 uniform float u_lightning : hint_range(0.0, 1.0) = 0.0;
+// 현재 tonemap 노출 배율 (GDScript exposure_mult) — 주간 하늘 노출 독립화에 사용
+uniform float u_exposure = 1.0;
 
-// Preetham 휘도 스케일: θ_s=45°, T=3일 때 청색≈0.95 기준
-const float SCALE = 0.05;
+// Preetham 휘도 스케일 — 노출 독립화 후 정오 천정이 과밝지 않도록 재보정.
+// 주간 하늘은 ÷u_exposure로 노출에 무관하게 고정 표시되므로 SCALE이 절대 밝기를 정함.
+const float SCALE = 0.022;
 
 // Preetham Perez 분포 함수
 // cos_theta: cos(시선 천정각), gamma: 시선~태양 사이 각도(라디안)
@@ -87,6 +90,10 @@ void sky() {
 	// 지평선 아래 시선은 지평선(y=0)으로 클램프해 Preetham 계산
 	vec3 eye_above = normalize(vec3(eye.x, max(eye.y, 0.001), eye.z));
 	vec3 sky_col   = preetham(eye_above, sun_dir, u_turbidity);
+	// 노출 독립화: 주간 하늘을 ÷u_exposure 하면 Environment tonemap(×u_exposure)이
+	// 정확히 상쇄 → 하늘이 노출에 휩쓸리지 않음. (일몰 시 노출이 ~11배 올라 하늘이
+	// 순백으로 폭발하던 화이트아웃 해소.) night_col은 이미 GDScript에서 ÷노출(exp_norm).
+	sky_col /= max(u_exposure, 0.001);
 
 	// 야간 블렌드: -2° → -10° smoothstep (log 공간 보간)
 	float dtn_raw = clamp((-sun_elev_deg - 2.0) / 8.0, 0.0, 1.0);

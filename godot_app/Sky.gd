@@ -1142,6 +1142,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		Vector3(night_top.r, night_top.g, night_top.b))
 	_sky_mat.set_shader_parameter("u_night_horizon",
 		Vector3(night_horizon.r, night_horizon.g, night_horizon.b))
+	# 주간 하늘 노출 독립화용 — 셰이더가 sky_col÷u_exposure 하여 tonemap×exposure 상쇄
+	_sky_mat.set_shader_parameter("u_exposure", exposure_mult)
 	# 안개 색 저장용 (fog 계산에서 참조)
 	_fog_horizon_color = night_horizon
 
