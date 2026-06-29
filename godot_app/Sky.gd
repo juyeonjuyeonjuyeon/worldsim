@@ -174,7 +174,8 @@ var _sun_shader_mat: ShaderMaterial
 var _prev_sun_elev: float = -90.0   # 지평선 횡단 감지용
 var _green_flash_t: float = 0.0     # 녹색 섬광 진행 (0=없음, 1=최대)
 var _world_env: WorldEnvironment
-var _sky_mat: ProceduralSkyMaterial
+var _sky_mat: ShaderMaterial
+var _fog_horizon_color: Color = Color(0.5, 0.5, 0.5)
 var _stars_mm: MultiMeshInstance3D
 var _planet_mm: MultiMeshInstance3D    # 금성·목성 (2 인스턴스)
 var _saturn_ring_inst: MeshInstance3D
@@ -289,17 +290,16 @@ func _build_sky_and_lights() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
-	_sky_mat = ProceduralSkyMaterial.new()
-	# 기본값 30°는 비현실적으로 큰 글로우를 만들고 부분 구름(cirrus/cumulus)이
-	# blend_mix로 글로우 일부를 감쇠시켜 검정 후광처럼 보이게 함.
-	# 실제 태양 오레올(aureole): 대기 산란으로 약 5-10° 이내에서만 유의미하게 밝음.
-	# sun_curve=0.1: 급격한 감쇠로 글로우를 태양 원반(0.53°) 근처에 집중
-	_sky_mat.sun_angle_max = 8.0
-	_sky_mat.sun_curve     = 0.1
-	# sky_curve=0.15(기본값)에서 blend 지수=6.67 → 고도 45°에서 sky_horizon 88% 적용 → 노을이 하늘 중간까지 번짐
-	# 0.45로 올리면 지수=2.22 → 고도 45°에서 sky_horizon 54%, 60°에서 27% → 노을이 지평선 부근에 집중
-	# 임시값(커스텀 Sky 셰이더 전환 전까지)
-	_sky_mat.sky_curve     = 0.45
+	_sky_mat = ShaderMaterial.new()
+	var atm_shader := load("res://sky_atmosphere.gdshader") as Shader
+	assert(atm_shader != null, "sky_atmosphere.gdshader 로드 실패")
+	_sky_mat.shader = atm_shader
+	_sky_mat.set_shader_parameter("u_turbidity", 3.0)
+	_sky_mat.set_shader_parameter("u_sun_dir",       Vector3(0.0, 1.0, 0.0))
+	_sky_mat.set_shader_parameter("u_night_top",     Vector3(0.00190, 0.00218, 0.00358))
+	_sky_mat.set_shader_parameter("u_night_horizon", Vector3(0.00080, 0.00085, 0.00140))
+	_sky_mat.set_shader_parameter("u_overcast_amt",  0.0)
+	_sky_mat.set_shader_parameter("u_lightning",     0.0)
 	sky.sky_material = _sky_mat
 	env.sky = sky
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
@@ -1116,8 +1116,8 @@ func _update_fog(weather_type: String, rain_rate: float, temperature: float, win
 	env.fog_enabled = has_fog
 	if has_fog:
 		env.fog_density = _fog_density_cur
-		# 안개 색 기준: sky_horizon_color (밤/낮 tonemap에 맞게 이미 스케일됨)
-		var h: Color = _sky_mat.sky_horizon_color
+		# 안개 색 기준: 직전 프레임 지평선 색 (set_shader_parameter 후 _fog_horizon_color에 저장됨)
+		var h: Color = _fog_horizon_color
 		match weather_type:
 			"RAIN":  env.fog_light_color = Color(h.r * 0.88, h.g * 0.92, h.b * 1.12)
 			"SNOW":  env.fog_light_color = Color(h.r * 1.10, h.g * 1.10, h.b * 1.08)
@@ -1226,9 +1226,6 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	sky_brightness_safe = min(1.0, 1.0 / exposure_mult)
 	_moon_shader_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
 
-	# sky_night_blend: 구름 overcast 블렌딩 용도로만 유지 (−6° → −18° = 0→1)
-	var sky_night_blend: float = clampf((-elevation - 6.0) / 12.0, 0.0, 1.0)
-
 	# ── 사람눈/카메라 모드 분기 ───────────────────────────────────────────
 	_sun_shader_mat.set_shader_parameter("glare_scale", 1.5 if _eye_view else 0.8)
 	# Purkinje 이동: 조도에 따른 연속 암순응 계산
@@ -1266,27 +1263,16 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	night_horizon += Color(0.003, 0.012, 0.005) * airglow_t
 	night_top     += Color(0.001, 0.005, 0.002) * airglow_t
 
-	# ── 하늘 색: Preetham(1999) 대기 산란 모델 + 야간 블렌드 ──────────────
-	# Layer A (elevation ≥ −2°): Preetham 분석 모델 — 손으로 색 지정 없음
-	# Layer B (elevation < −10°): 야간 고정 색 (night_top / night_horizon)
-	# 혼합구간 (−2° ∼ −10°, 8°): smoothstep 가중치 + log 공간 채널 보간
-	# 이유: 선형 lerp는 Preetham 오렌지(~1.4)↔야간 암색(~0.003) 560:1 비율을 인지상 급변으로 보여줌.
-	# log 보간 → 각 채널이 지수적으로 감쇠(매 단위 t마다 일정 비율 감소) → 지각 균등 전환.
-	# B채널 eps=1e-5: Preetham 일몰 B=0 처리 (log(0) 방지).
-	var hw_colors := _preetham_sky_colors(maxf(elevation, -6.0), 3.0)
-	var _dtn_raw := clampf((-elevation - 2.0) / 8.0, 0.0, 1.0)
-	var _dtn_t   := _dtn_raw * _dtn_raw * (3.0 - 2.0 * _dtn_raw)  # smoothstep
-	var hw_t := hw_colors[0] as Color
-	var hw_h := hw_colors[1] as Color
-	var _eps := 1e-5
-	var top := Color(
-		exp(lerpf(log(maxf(hw_t.r, _eps)), log(maxf(night_top.r,     _eps)), _dtn_t)),
-		exp(lerpf(log(maxf(hw_t.g, _eps)), log(maxf(night_top.g,     _eps)), _dtn_t)),
-		exp(lerpf(log(maxf(hw_t.b, _eps)), log(maxf(night_top.b,     _eps)), _dtn_t)))
-	var horizon := Color(
-		exp(lerpf(log(maxf(hw_h.r, _eps)), log(maxf(night_horizon.r, _eps)), _dtn_t)),
-		exp(lerpf(log(maxf(hw_h.g, _eps)), log(maxf(night_horizon.g, _eps)), _dtn_t)),
-		exp(lerpf(log(maxf(hw_h.b, _eps)), log(maxf(night_horizon.b, _eps)), _dtn_t)))
+	# ── 하늘 색: 커스텀 Sky 셰이더(sky_atmosphere.gdshader)에서 픽셀별 Preetham 계산 ──
+	# uniform으로 태양 방향·야간 색·overcast 전달 → 셰이더가 방향성 있는 산란을 직접 계산
+	_sky_mat.set_shader_parameter("u_sun_dir",
+		Vector3(sun_dir.x, sun_dir.y, sun_dir.z))
+	_sky_mat.set_shader_parameter("u_night_top",
+		Vector3(night_top.r, night_top.g, night_top.b))
+	_sky_mat.set_shader_parameter("u_night_horizon",
+		Vector3(night_horizon.r, night_horizon.g, night_horizon.b))
+	# 안개 색 저장용 (fog 계산에서 참조)
+	_fog_horizon_color = night_horizon
 
 	# 날씨 전환 시 tau를 부드럽게 보간 — 점프 없이 흐린날→맑음 or 역방향 전환
 	# lerpf weight ≈ delta×0.3: 60fps에서 τ≈3s, 빠른 전환도 끊김 없이 반영
@@ -1304,16 +1290,8 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# 태양은 얇은 구름에서도 어느 정도 보임 (달보다 밝아서)
 	var sun_cloud_fade: float = clampf(1.0 - sky_overcast_amt * 0.85, 0.0, 1.0)
 	_sun_shader_mat.set_shader_parameter("cloud_fade", sun_cloud_fade)
-	var overcast_grey: Color = Color(0.42, 0.44, 0.47)
-	top     = top.lerp(overcast_grey,    sky_overcast_amt * (1.0 - sky_night_blend))
-	horizon = horizon.lerp(overcast_grey, sky_overcast_amt * (1.0 - sky_night_blend))
-	top.a = 1.0; horizon.a = 1.0
-	_sky_mat.sky_top_color      = top
-	_sky_mat.sky_horizon_color  = horizon
-	_sky_mat.ground_horizon_color = horizon
-	var ground_bottom: Color    = Color(0.05, 0.05, 0.05)
-	ground_bottom.a = 1.0
-	_sky_mat.ground_bottom_color = ground_bottom
+	# overcast 혼합은 셰이더에서 처리 — u_overcast_amt uniform 전달
+	_sky_mat.set_shader_parameter("u_overcast_amt", sky_overcast_amt)
 
 	_sun_light.light_energy *= direct_transmittance
 	_world_env.environment.tonemap_exposure = exposure_mult
@@ -1329,11 +1307,10 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	var sat_floor: float = lerp(twi_sat_floor, night_sat_floor, twilight_factor)
 	_world_env.environment.adjustment_saturation = lerp(sat_floor, 1.0, sat)
 
+	# 번개 플래시는 셰이더에서 처리 — u_lightning uniform 전달
+	_sky_mat.set_shader_parameter("u_lightning", lightning_flash)
 	if lightning_flash > 0.01:
-		var fi: float = lightning_flash
-		_sky_mat.sky_top_color     = _sky_mat.sky_top_color.lerp(Color(0.75, 0.80, 0.95), fi)
-		_sky_mat.sky_horizon_color = _sky_mat.sky_horizon_color.lerp(Color(0.85, 0.87, 0.95), fi)
-		_world_env.environment.tonemap_exposure = lerp(_world_env.environment.tonemap_exposure, 1.0, fi)
+		_world_env.environment.tonemap_exposure = lerp(_world_env.environment.tonemap_exposure, 1.0, lightning_flash)
 
 func _update_stars(dt: Dictionary, hour_utc: float, latitude: float, longitude: float, cloud_props: Dictionary) -> void:
 	if _star_data.is_empty():
