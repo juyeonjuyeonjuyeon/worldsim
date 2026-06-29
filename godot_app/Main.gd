@@ -137,6 +137,9 @@ func _maybe_auto_screenshot() -> void:
 	if idx < 0:
 		return
 	var out_path: String = "user://auto_screenshot.png" if idx + 1 >= args.size() else args[idx + 1]
+	var lat_idx := args.find("--lat")
+	if lat_idx >= 0 and lat_idx + 1 < args.size():
+		latitude = float(args[lat_idx + 1])
 	var fixed_time: float = -999.0
 	var time_idx := args.find("--time")
 	if time_idx >= 0 and time_idx + 1 < args.size():
@@ -156,7 +159,7 @@ func _maybe_auto_screenshot() -> void:
 		_camera._pitch = deg_to_rad(float(args[pitch_idx + 1]))
 	_camera.update(0.0)   # yaw/pitch 즉시 반영
 	# 시간 고정 유지하며 여러 프레임 렌더 (하늘 radiance/노출 안정화)
-	for _i in range(20):
+	for _i in range(40):
 		if fixed_time > -900.0:
 			elapsed_play_seconds = 0.0
 			time_of_day = fixed_time
@@ -164,8 +167,6 @@ func _maybe_auto_screenshot() -> void:
 	var img: Image = get_viewport().get_texture().get_image()
 	img.save_png(out_path)
 	print("AUTO SCREENSHOT: " + out_path)
-	if OS.has_environment("SKYDBG"):
-		print("CAPSTATE time=%.3f elapsed=%.2f exp_safe=%.5f" % [time_of_day, elapsed_play_seconds, _sky.sky_brightness_safe])
 	# 하늘 색 진단: 우측 청천 컬럼(x=0.78W)을 천정→지평선으로 샘플링 (sRGB 0–255)
 	var w: int = img.get_width()
 	var h: int = img.get_height()

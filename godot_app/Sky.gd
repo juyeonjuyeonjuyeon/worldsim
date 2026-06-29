@@ -152,6 +152,10 @@ func _build_sky_and_lights() -> void:
 	_sky_mat.set_shader_parameter("u_overcast_amt",  0.0)
 	_sky_mat.set_shader_parameter("u_lightning",     0.0)
 	sky.sky_material = _sky_mat
+	# 매 프레임 하늘 radiance 갱신 — 큐브맵 캐싱으로 배경이 직전 태양위치에 묶이는
+	# 문제 방지(시각 점프 시 밝기 불일치). 모바일에선 비용↑이나 정확성 우선.
+	sky.process_mode = Sky.PROCESS_MODE_REALTIME
+	sky.radiance_size = Sky.RADIANCE_SIZE_128
 	env.sky = sky
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = false
@@ -903,7 +907,9 @@ func _update_milkyway(dt: Dictionary, hour_utc: float, latitude: float, longitud
 		var center_az:= Astronomy.radec_to_altaz(center_pr.x, center_pr.y, gmst, latitude, longitude)
 		_milkyway_mat.set_shader_parameter("gal_pole",   SkyMath._altaz_to_dir(pole_az.x,   pole_az.y))
 		_milkyway_mat.set_shader_parameter("gal_center", SkyMath._altaz_to_dir(center_az.x, center_az.y))
-	_milkyway_mat.set_shader_parameter("intensity", _milkyway_intensity)
+	# 노출 보정(× sky_brightness_safe): blend_add 발광이 야간 tonemap ×16에 폭발하지
+	# 않도록 — 보름달/구름과 동일 보정. (이전엔 미보정 → 은하수 방향에 따라 하늘 폭발)
+	_milkyway_mat.set_shader_parameter("intensity", _milkyway_intensity * sky_brightness_safe)
 	_milkyway_mesh.visible = _milkyway_intensity > 0.001
 
 func _update_zodiacal_light(sun_altaz: Vector2, cloud_props: Dictionary, delta: float) -> void:
@@ -919,7 +925,8 @@ func _update_zodiacal_light(sun_altaz: Vector2, cloud_props: Dictionary, delta: 
 	_zodiac_intensity = lerpf(_zodiac_intensity, target_zl, delta * spd_zl)
 	# 태양의 지평선 아래 실제 방향 (고도 그대로 전달 — 지평선 아래여도 OK)
 	_zodiac_mat.set_shader_parameter("sun_dir", SkyMath._altaz_to_dir(sun_elev, sun_altaz.y))
-	_zodiac_mat.set_shader_parameter("intensity", _zodiac_intensity)
+	# 노출 보정 — 황도광도 blend_add 발광 (은하수와 동일 이유)
+	_zodiac_mat.set_shader_parameter("intensity", _zodiac_intensity * sky_brightness_safe)
 	_zodiac_mesh.visible = _zodiac_intensity > 0.001
 
 func _update_fog(weather_type: String, rain_rate: float, temperature: float, wind_speed: float, cloud_props: Dictionary, hour_local: float, delta: float) -> void:
@@ -953,16 +960,20 @@ func _update_fog(weather_type: String, rain_rate: float, temperature: float, win
 	env.fog_enabled = has_fog
 	if has_fog:
 		env.fog_density = _fog_density_cur
+		# 안개는 지면/거리 물체만 흐리게 — 하늘 돔은 건드리지 않음.
+		# (복사안개는 지면 얕은 층; 하늘 흐림은 셰이더 u_overcast가 담당)
+		# 이전엔 안개가 무한원점 하늘을 fog색으로 덮어 야간 하늘이 캄캄해짐.
+		env.fog_sky_affect = 0.0
 		# 안개 색 기준: 직전 프레임 지평선 색 (set_shader_parameter 후 _fog_horizon_color에 저장됨)
 		var h: Color = _fog_horizon_color
 		match weather_type:
 			"RAIN":  env.fog_light_color = Color(h.r * 0.88, h.g * 0.92, h.b * 1.12)
 			"SNOW":  env.fog_light_color = Color(h.r * 1.10, h.g * 1.10, h.b * 1.08)
 			_:
-				# 비→맑음 전환 중 잔여 안개: sky_horizon이 갑자기 밝아져도
-				# 밀도에 비례해 색을 어둡게 유지 → tonemap 증폭 후 큰 광원 방지
-				var dim: float = clampf(_fog_density_cur / 0.015, 0.0, 1.0)
-				env.fog_light_color = Color(h.r * dim, h.g * dim, h.b * dim)
+				# 복사안개: 산란광 ≈ 지평선 하늘색. 안개가 하늘보다 어두워지면
+				# 무한원점 하늘이 캄캄해짐(야간 sky blackout 버그). 지평선색 그대로
+				# 사용해 하늘과 동일 밝기 유지. 상한(0.5)만 둬 전환 중 HDR 글로우 방지.
+				env.fog_light_color = Color(minf(h.r, 0.5), minf(h.g, 0.5), minf(h.b, 0.5))
 		env.fog_sun_scatter = 0.25
 
 func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: Dictionary, lightning_flash: float, delta: float) -> void:
@@ -1107,13 +1118,14 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	# van Rhijn: 지평선이 천정보다 밝음(시선이 발광층을 더 긴 경로로 통과).
 	# exp_norm 공유 → night_* 와 동일 노출 스케일(노출 독립).
 	var deep_t: float = smoothstep(10.0, 18.0, -elevation)   # 천문박명 진입부터 점증
-	# 청백 별빛/산란 바닥 — Rayleigh로 청색 우세 (Filmic toe 위로 올려 안정화)
-	var floor_top := Color(0.10, 0.12, 0.19) * exp_norm * deep_t
-	var floor_hor := Color(0.13, 0.15, 0.22) * exp_norm * deep_t   # 지평선 더 밝음
+	# 청백 별빛/산란 바닥 — Rayleigh로 청색 우세 (Filmic toe 위로 올려 안정화).
+	# 깊은 밤 천정이 옅은 남청색이 되도록 보정(이전 0.10~0.19는 박명급으로 과밝았음).
+	var floor_top := Color(0.012, 0.016, 0.030) * exp_norm * deep_t
+	var floor_hor := Color(0.018, 0.023, 0.038) * exp_norm * deep_t   # 지평선 더 밝음
 	# 대기광 녹색 가산(OI 557.7nm) — 더 깊은 밤에 점증, 구름이 가림
 	var airglow_t: float = smoothstep(14.0, 24.0, -elevation) * exp(-(cloud_props["tau"] as float) / 3.0)
-	floor_top += Color(0.02, 0.06, 0.025) * exp_norm * airglow_t
-	floor_hor += Color(0.03, 0.09, 0.04) * exp_norm * airglow_t
+	floor_top += Color(0.006, 0.018, 0.008) * exp_norm * airglow_t
+	floor_hor += Color(0.010, 0.028, 0.012) * exp_norm * airglow_t
 	# 바닥 적용: 달빛으로 base가 더 밝으면 base 유지(max), 아니면 바닥으로 안정화
 	night_top.r = maxf(night_top.r, floor_top.r)
 	night_top.g = maxf(night_top.g, floor_top.g)
@@ -1896,7 +1908,9 @@ func _update_aurora(sun_altaz: Vector2, latitude: float, cloud_props: Dictionary
 	var phase: float = _aurora_mat.get_shader_parameter("time_phase") as float
 	_aurora_mat.set_shader_parameter("time_phase", phase + delta * 0.4)
 	_aurora_mat.set_shader_parameter("kp_index",   _aurora_kp)
-	_aurora_mat.set_shader_parameter("intensity",  _aurora_intensity)
+	# 노출 보정 — 오로라도 blend_add 발광. 미보정 시 야간 ×16 tonemap에 폭발해
+	# 녹색·커튼 구조 잃고 평평한 흰색이 됨(이슈4). sky_brightness_safe로 보정.
+	_aurora_mat.set_shader_parameter("intensity",  _aurora_intensity * sky_brightness_safe)
 	_aurora_mesh.visible = _aurora_intensity > 0.001
 
 func _build_trails() -> void:
