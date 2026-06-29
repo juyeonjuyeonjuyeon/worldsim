@@ -296,6 +296,9 @@ uniform float exposure_safe : hint_range(0.0, 1.0)   = 1.0;
 uniform vec2  eclipse_moon_uv = vec2(99.0, 99.0);
 uniform float eclipse_moon_r  = 0.0;
 uniform float eclipse_total   = 0.0;
+// 일식 글레어 감쇠 = 가시 광구 비율(1-cover). 광구가 가려지면 글레어 헤일로도
+// 비례해 사라져야 함(개기 시 0 → 검은 원반+코로나만 남음). 평상시 1.
+uniform float glare_atten     = 1.0;
 // 원반·글레어 밝기 배율 — 고도별(높을 때 밝은 흰 디스크, 질 때 어두운 오렌지).
 // 지는 태양은 대기 소광으로 ~1000× 어두워짐 → 낮춰야 오렌지가 흰색에 안 묻힘(오렌지아워).
 uniform float disk_bright     = 2.2;
@@ -329,7 +332,9 @@ void fragment() {
 	// 메시 글레어는 디스크 주변 좁은 광환만 담당(이중 글로우·순백 폭발 방지).
 	float core = exp(-max(0.0, d - 0.10) * (11.0 / glare_scale)) * (1.0 * glare_scale);
 	float halo = exp(-d * (3.2 / glare_scale)) * (0.14 * glare_scale);
-	float glow = (core + halo) * rmask * (1.0 - occ * 0.92);   // 가려진 만큼 글레어도 약화
+	// 글레어: 달 원반 안쪽(occ)에서 약화 + 가시 광구 비율(glare_atten)로 전체 감쇠.
+	// 후자가 없으면 달 바깥으로 뻗은 글레어 헤일로가 개기 때도 밝은 공으로 남음.
+	float glow = (core + halo) * rmask * (1.0 - occ * 0.92) * glare_atten;
 	// 개기일식 코로나: 달 가장자리 바깥 진주빛 고리 (개기 근접 시만)
 	float corona = exp(-max(0.0, d - eclipse_moon_r) * 6.0) * (1.0 - occ) * eclipse_total * 0.5 * rmask;
 
@@ -1151,9 +1156,11 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		_sun_shader_mat.set_shader_parameter("eclipse_moon_uv", moon_uv)
 		_sun_shader_mat.set_shader_parameter("eclipse_moon_r", 0.100)   # 달 각반경→dvec
 		_sun_shader_mat.set_shader_parameter("eclipse_total", smoothstep(0.85, 1.0, solar_cover))
+		_sun_shader_mat.set_shader_parameter("glare_atten", 1.0 - solar_cover)  # 가시 광구 비율로 글레어 감쇠
 	else:
 		_sun_shader_mat.set_shader_parameter("eclipse_moon_uv", Vector2(99.0, 99.0))
 		_sun_shader_mat.set_shader_parameter("eclipse_total", 0.0)
+		_sun_shader_mat.set_shader_parameter("glare_atten", 1.0)
 
 	# ── 녹색 섬광 (Green Flash) ─────────────────────────────────────────
 	# 태양이 지평선을 느리게 횡단 + 맑은 하늘 조건에서 1회 점등
@@ -1276,8 +1283,11 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 		Vector3(night_horizon.r, night_horizon.g, night_horizon.b))
 	# 주간 하늘 노출 독립화용 — 셰이더가 sky_col÷u_exposure 하여 tonemap×exposure 상쇄
 	_sky_mat.set_shader_parameter("u_exposure", exposure_mult)
-	# 일식: 가려진 만큼 산란 하늘을 어둡게(개기 시 박명같은 어두운 하늘 + 코로나·별)
-	_sky_mat.set_shader_parameter("u_sun_intensity", 1.0 - solar_cover * 0.97)
+	# 일식: 가려진 만큼 산란 하늘을 어둡게. 직사 햇빛의 산란 기여는 가시 광구
+	# 비율(1-cover)에 비례 → 개기 시 0에 수렴해 태양방향 Mie 전방산란 피크(밝은 공)도
+	# 사라지고, 가려진 태양 메쉬의 검은 원반+코로나가 드러남(개기일식 본연의 모습).
+	# 개기(cover=1)에서 정확히 0 → Mie 피크 완전 소멸. 잔여 박명광은 night_col/지면 글로우가 담당.
+	_sky_mat.set_shader_parameter("u_sun_intensity", 1.0 - solar_cover)
 	# 안개 색 저장용 (fog 계산에서 참조)
 	_fog_horizon_color = night_horizon
 

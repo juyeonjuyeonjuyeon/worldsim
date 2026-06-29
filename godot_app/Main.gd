@@ -194,7 +194,33 @@ func _maybe_auto_screenshot() -> void:
 	var pitch_idx := args.find("--pitch")
 	if pitch_idx >= 0 and pitch_idx + 1 < args.size():
 		_camera._pitch = deg_to_rad(float(args[pitch_idx + 1]))
+	# 천체 자동 조준: --look-sun / --look-moon → 태양/달 방위·고도로 카메라 yaw/pitch 설정.
+	# alt/az(도, 나침반 북=0)를 월드 방향(북=-Z, 동=+X, 위=+Y)으로 변환 후 yaw=atan2(-x,-z).
+	if args.has("--look-sun") or args.has("--look-moon"):
+		var dt2: Dictionary = _current_datetime()
+		var hutc: float = dt2["hour"] - utc_offset
+		var aaz: Vector2
+		if args.has("--look-moon"):
+			var mst: Dictionary = Astronomy.moon_state(dt2["year"], dt2["month"], dt2["day"], hutc, latitude, longitude)
+			aaz = Vector2(mst["alt"], mst["az"])
+		else:
+			aaz = Astronomy.sun_altaz(dt2["year"], dt2["month"], dt2["day"], hutc, latitude, longitude)
+		var altr: float = deg_to_rad(aaz.x)
+		var azr: float  = deg_to_rad(aaz.y)
+		var d := Vector3(cos(altr) * sin(azr), sin(altr), -cos(altr) * cos(azr))
+		_camera._yaw   = atan2(-d.x, -d.z)
+		_camera._pitch = asin(clampf(d.y, -1.0, 1.0))
+		print("LOOKAT alt=%.1f az=%.1f" % [aaz.x, aaz.y])
 	_camera.update(0.0)   # yaw/pitch 즉시 반영
+	# 카메라 조준 후 _update_all 재호출: 일식 달 카브(eclipse_moon_uv) 등 카메라 기준
+	# 빌보드 투영값을 최종 시점으로 다시 계산. (안 하면 수렴 루프 때의 기본 카메라
+	# 기준값이 남아 디스크에서 빗나감 — 실제 앱은 매 프레임 갱신돼 정상.)
+	for _r in range(8):
+		elapsed_play_seconds = 0.0
+		if fixed_time > -900.0: time_of_day = fixed_time
+		if hum_force >= 0.0: _env.humidity = hum_force
+		if ecl_pin >= 0.0: _sky._eclipse_test_t = ecl_pin
+		_update_all(0.0)
 	# 시간 고정 유지하며 여러 프레임 렌더 (하늘 radiance/노출 안정화)
 	for _i in range(40):
 		if fixed_time > -900.0:
