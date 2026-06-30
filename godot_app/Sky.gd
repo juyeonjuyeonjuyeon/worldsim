@@ -20,6 +20,8 @@ var _sun_light: DirectionalLight3D
 var _moon_light: DirectionalLight3D
 var _moon_mesh: MeshInstance3D
 var _moon_shader_mat: ShaderMaterial
+var _moon_glow_mesh: MeshInstance3D    # 달 후광(별도 빌보드, 동결 위상셰이더 미변경)
+var _moon_glow_mat: ShaderMaterial
 var _sun_mesh: MeshInstance3D
 var _sun_shader_mat: ShaderMaterial
 var _prev_sun_elev: float = -90.0   # 지평선 횡단 감지용
@@ -306,6 +308,48 @@ void fragment() {
 	_moon_mesh.material_override = _moon_shader_mat
 	add_child(_moon_mesh)
 
+	# 달 후광(halo) — 디스크 각지름은 동결(정확)이라 그대로 두고, 뒤에 부드러운 글로우
+	# 빌보드를 둬 '작지만 존재감 있는 달'을 만든다(동결 위상셰이더는 미변경). 사람 눈이
+	# 보는 달 주변 산란광/눈부심을 근사. 빌보드라 디스크는 안 그리고 헤일로만.
+	_moon_glow_mesh = MeshInstance3D.new()
+	var moon_glow_quad := QuadMesh.new()
+	moon_glow_quad.size = Vector2(3.4, 3.4)   # half 1.7m → 100m서 ±0.97°(디스크 0.26°의 ~3.7배)
+	_moon_glow_mesh.mesh = moon_glow_quad
+	var moon_glow_shader := Shader.new()
+	moon_glow_shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, blend_add, depth_draw_never;
+uniform vec3  glow_color   : source_color = vec3(0.62, 0.72, 0.95);
+uniform float glow_str     : hint_range(0.0, 2.0) = 0.0;   // 달 밝기/가시성에 비례(밤만)
+uniform float exposure_safe : hint_range(0.0, 1.0) = 1.0;
+varying float v_world_dir_y;
+void vertex() {
+	vec4 center_view = VIEW_MATRIX * MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
+	vec4 vert_view = center_view + vec4(VERTEX.xy, 0.0, 0.0);
+	POSITION = PROJECTION_MATRIX * vert_view;
+	v_world_dir_y = (INV_VIEW_MATRIX * vec4(normalize(vert_view.xyz), 0.0)).y;
+}
+void fragment() {
+	vec2 dvec = (UV - vec2(0.5)) * 2.0;
+	float d = length(dvec);
+	float rmask = 1.0 - smoothstep(0.82, 1.0, d);     // 사각 경계 제거
+	// 이중 falloff: 디스크 근처 밝은 코어 글로우 + 넓고 옅은 헤일로
+	float core = exp(-d * 6.0) * 0.7;
+	float halo = exp(-d * 2.2) * 0.25;
+	float glow = (core + halo) * rmask;
+	float ground_fade = smoothstep(-0.005, 0.02, v_world_dir_y);  // 지평선 아래 차단
+	ALBEDO = glow_color * exposure_safe;
+	ALPHA  = clamp(glow * glow_str * ground_fade, 0.0, 1.0);
+}
+"""
+	_moon_glow_mat = ShaderMaterial.new()
+	_moon_glow_mat.shader = moon_glow_shader
+	_moon_glow_mat.set_shader_parameter("glow_color", Vector3(0.62, 0.72, 0.95))
+	_moon_glow_mat.set_shader_parameter("glow_str", 0.0)
+	_moon_glow_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_moon_glow_mesh.material_override = _moon_glow_mat
+	add_child(_moon_glow_mesh)
+
 	# 태양 원반 — 뷰 공간 빌보드 쿼드, 거리 100m
 	# 물리 각지름 0.53° (= 반경 0.265°). 100m 거리에서 tan(0.265°)×100 = 0.463m
 	# 9m quad half=4.5m → disc UV d = 0.463/4.5 = 0.103
@@ -370,6 +414,10 @@ void fragment() {
 	// 메시 글레어는 디스크 주변 좁은 광환만 담당(이중 글로우·순백 폭발 방지).
 	float core = exp(-max(0.0, d - 0.10) * (11.0 / glare_scale)) * (1.0 * glare_scale);
 	float halo = exp(-d * (3.2 / glare_scale)) * (0.14 * glare_scale);
+	// 존재감: 높은 태양(disk_bright↑)에서만 헤일로를 넓고 밝게 키워 '작지만 존재감 있는 해'.
+	// 낮은 태양(노을)은 high_f≈0이라 불변 → 오렌지아워 보존(글레어가 노을 색 안 덮음).
+	float high_f = smoothstep(1.1, 2.0, disk_bright);   // 고도 ~10°→26° 사이 0→1
+	halo += exp(-d * (2.0 / glare_scale)) * (0.12 * glare_scale) * high_f;
 	// 글레어: 달 원반 안쪽(occ)에서 약화 + 가시 광구 비율(glare_atten)로 전체 감쇠.
 	// 후자가 없으면 달 바깥으로 뻗은 글레어 헤일로가 개기 때도 밝은 공으로 남음.
 	float glow = (core + halo) * rmask * (1.0 - occ * 0.92) * glare_atten;
@@ -1357,6 +1405,15 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_moon_shader_mat.set_shader_parameter("cloud_fade", moon_cloud_fade)
 	# visible: 페이드 구간(−3.5°) 포함, cloud_fade·horizon_fade가 실제 투명도 결정
 	_moon_mesh.visible = moon_alt > -3.5 and moon_cloud_fade > 0.01
+	# 달 후광: 달 위치에 글로우 빌보드 배치. 강도 = 위상(밝기)×지평페이드×밤도×구름.
+	# 밤에 달이 떠 있을 때만 부드러운 헤일로로 존재감. 디스크 각지름은 동결(불변).
+	if is_instance_valid(_moon_glow_mesh):
+		_moon_glow_mesh.global_position = cam_origin + moon_dir * 100.0
+		var moon_night_f: float = smoothstep(2.0, -8.0, elevation)   # 태양 질수록 1
+		var glow_s: float = moon_illum * moon_horizon_fade * moon_night_f * moon_cloud_fade
+		_moon_glow_mesh.visible = glow_s > 0.005
+		_moon_glow_mat.set_shader_parameter("glow_str", glow_s)
+		_moon_glow_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
 	# 태양은 얇은 구름에서도 어느 정도 보임 (달보다 밝아서)
 	var sun_cloud_fade: float = clampf(1.0 - sky_overcast_amt * 0.85, 0.0, 1.0)
 	_sun_shader_mat.set_shader_parameter("cloud_fade", sun_cloud_fade)
