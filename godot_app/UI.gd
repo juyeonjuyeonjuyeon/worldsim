@@ -7,6 +7,7 @@ signal aspect_requested(ratio: String)
 signal test_event_requested(event_name: String)
 signal test_toggle_requested(name: String, on: bool)   # 특수현상 켜기/끄기
 signal test_param_changed(name: String, value: float)  # 특수현상 강도 슬라이더
+signal showcase_restore_requested()                    # 연출 복귀(원래 설정으로)
 signal eye_view_requested(enabled: bool)
 signal play_state_changed(playing: bool)
 
@@ -786,6 +787,13 @@ func _build_all(init: Dictionary) -> void:
 	vb_test.add_child(_phenomenon_toggle("블루문", "blue_moon"))
 	vb_test.add_child(_phenomenon_toggle("무지개", "rainbow"))
 	vb_test.add_child(_phenomenon_toggle("혜성", "comet"))
+	# 연출 복귀: 현상 켜면 그 조건(시각·위도·날씨·카메라)으로 이동 → 이 버튼으로 원상복구
+	vb_test.add_child(HSeparator.new())
+	var restore_btn := Button.new()
+	restore_btn.text = "↩ 원래 설정으로 복귀"
+	restore_btn.add_theme_font_size_override("font_size", fs_ctrl)
+	restore_btn.pressed.connect(func(): showcase_restore_requested.emit())
+	vb_test.add_child(restore_btn)
 
 	settings_btn.pressed.connect(func(): panel.visible = not panel.visible)
 

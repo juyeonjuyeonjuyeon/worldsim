@@ -62,6 +62,8 @@ var _auto_wind_dir_target: float   = 0.0
 var _auto_wx_rng := RandomNumberGenerator.new()
 # ── 종관 이동 기압장 (자동날씨를 인과적으로 구동) ──────────────────────────
 # 고·저기압이 W→E로 통과하는 준주기 파동열. 기압 경향→구름/강수 시퀀스, 경도→풍향.
+var _showcase_saved: Dictionary   = {}     # 특수현상 연출 전 원래 설정 저장
+var _showcase_active: bool        = false
 var _synoptic_phase: float        = 0.0    # 시스템 통과 위상(시뮬일 누적)
 var _synoptic_period_days: float  = 4.0    # 시스템 간격(중위도 3~6일)
 var _synoptic_amp: float          = 10.0   # 기압 진폭 hPa(기후로 결정: 폭풍대=큼)
@@ -135,6 +137,7 @@ func _ready() -> void:
 	_ui.test_event_requested.connect(_on_test_event)
 	_ui.test_toggle_requested.connect(_on_test_toggle)
 	_ui.test_param_changed.connect(_on_test_param)
+	_ui.showcase_restore_requested.connect(_restore_showcase)
 	_ui.eye_view_requested.connect(_on_eye_view_requested)
 	_ui.play_state_changed.connect(_on_play_state_changed)
 	_ui.build(_ui_init_dict())
@@ -202,6 +205,14 @@ func _maybe_auto_screenshot() -> void:
 	if camy_idx >= 0 and camy_idx + 1 < args.size():
 		_camera.get_camera().position = Vector3(8.0, float(args[camy_idx + 1]), 16.0)
 	var fixed_time: float = -999.0
+	# 연출 검증: --showcase <name> → 그 현상의 조건·시각·카메라로 이동 후 그 시각 고정 렌더.
+	var sc_idx := args.find("--showcase")
+	if sc_idx >= 0 and sc_idx + 1 < args.size():
+		_on_test_toggle(args[sc_idx + 1], true)
+		fixed_time = time_of_day
+		print("SHOWCASE %s → time=%.1f lat=%.1f wx=%s yaw=%.0f pitch=%.0f" % [
+			args[sc_idx + 1], time_of_day, latitude, weather_type,
+			rad_to_deg(_camera._yaw), rad_to_deg(_camera._pitch)])
 	var time_idx := args.find("--time")
 	if time_idx >= 0 and time_idx + 1 < args.size():
 		fixed_time = float(args[time_idx + 1])
@@ -353,15 +364,109 @@ func _on_test_event(event_name: String) -> void:
 		"meteor":    _sky.trigger_meteor(false)
 		"shower":    _sky.trigger_meteor(true)
 
-# 특수현상 켜기/끄기 (체크박스)
+# 특수현상 켜기/끄기 (체크박스). 켤 때 그 현상이 자연 발생하는 조건·시점·방향으로
+# 환경을 연출(저장 후), 끌 때 별도 '복귀' 버튼으로 원상복구.
 func _on_test_toggle(name: String, on: bool) -> void:
+	if on:
+		_showcase_phenomenon(name)
 	match name:
-		"aurora":         _sky.set_aurora(on)
+		"aurora":
+			_sky.set_aurora(on)
+			if on: _sky.set_aurora_kp(6.0)   # 연출 기본 KP(뚜렷한 녹색+상단 적자)
 		"solar_eclipse":  _sky.set_eclipse("solar", on)
 		"lunar_eclipse":  _sky.set_eclipse("lunar", on)
 		"blue_moon":      _sky.set_blue_moon(on)
 		"rainbow":        _sky.set_rainbow(on)
 		"comet":          _sky.set_comet(on)
+	_update_all(0.0)
+
+# alt/az(도)로 카메라 자동 조준 (현상 방향을 바라보게)
+func _aim_camera_at(alt_deg: float, az_deg: float) -> void:
+	var altr: float = deg_to_rad(alt_deg)
+	var azr: float  = deg_to_rad(az_deg)
+	var d := Vector3(cos(altr) * sin(azr), sin(altr), -cos(altr) * cos(azr))
+	_camera._yaw   = atan2(-d.x, -d.z)
+	_camera._pitch = asin(clampf(d.y, -1.0, 1.0))
+	_camera.update(0.0)
+
+# 현상 연출: 현재 설정 저장(최초 1회) 후 이상적 조건·시각·카메라로 이동.
+func _showcase_phenomenon(name: String) -> void:
+	if not _showcase_active:
+		_showcase_saved = {
+			"time": time_of_day, "lat": latitude, "lon": longitude,
+			"weather": weather_type, "rt": real_time_mode,
+			"month": sim_month, "day": sim_day,
+			"yaw": _camera._yaw, "pitch": _camera._pitch,
+			"cloud": _sky.cloud_override, "cloudcov": _sky.cloud_coverage_override,
+		}
+		_showcase_active = true
+	real_time_mode = false   # 시간 정지(현상 유지)
+	match name:
+		"aurora":
+			latitude = 68.0; sim_month = 12; sim_day = 21; time_of_day = 23.0
+			weather_type = "CLEAR"; _sky.set_cloud_override("NONE", -1.0)
+			_aim_camera_at(40.0, 180.0)      # 오로라 띠(셰이더 mag_north 방향=az180)
+		"solar_eclipse":
+			time_of_day = 15.5; weather_type = "CLEAR"; _sky.set_cloud_override("NONE", -1.0)
+			var sa: Vector2 = _sun_altaz_now()   # 오후=태양 ~40°라 화면 중앙에 잘 잡힘
+			_aim_camera_at(sa.x, sa.y)
+		"lunar_eclipse", "blue_moon":
+			weather_type = "CLEAR"; _sky.set_cloud_override("NONE", -1.0)
+			_aim_moon_at_night()
+		"rainbow":
+			weather_type = "RAIN"; rain_rate = 8.0; _sky.set_cloud_override("AUTO", -1.0)
+			# 태양 ~20° 되는 늦은 오후로(없으면 16시), 반태양 방향 조준
+			time_of_day = _scan_sun_alt_time(20.0)
+			var ss: Vector2 = _sun_altaz_now()
+			_aim_camera_at(32.0, fmod(ss.y + 180.0, 360.0))   # 반태양·무지개 호 높이
+		"comet":
+			time_of_day = 22.0; weather_type = "CLEAR"; _aim_camera_at(40.0, 90.0)
+
+func _sun_altaz_now() -> Vector2:
+	var dt: Dictionary = _current_datetime()
+	return Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], time_of_day - utc_offset, latitude, longitude)
+
+# 태양 고도가 target(도)에 가장 가까운(상승/하강) 시각 — 무지개·박명 연출용
+func _scan_sun_alt_time(target: float) -> float:
+	var dt: Dictionary = _current_datetime()
+	var best_t: float = 16.0; var best_d: float = 999.0
+	for i in range(96):
+		var t: float = float(i) * 0.25
+		var a: float = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"], t - utc_offset, latitude, longitude).x
+		if a > 3.0 and absf(a - target) < best_d:
+			best_d = absf(a - target); best_t = t
+	return best_t
+
+# 달이 밤에 떠 있는 시각을 찾아 시간·날짜를 맞추고 카메라를 달로 조준
+func _aim_moon_at_night() -> void:
+	var dt: Dictionary = _current_datetime()
+	for i in range(24):
+		var th: float = 18.0 + float(i)
+		var dofs: int = int(th / 24.0)
+		var t: float  = fmod(th, 24.0)
+		var hutc: float = t - utc_offset
+		var ms: Dictionary = Astronomy.moon_state(dt["year"], dt["month"], dt["day"] + dofs, hutc, latitude, longitude)
+		var sa: float = Astronomy.sun_altaz(dt["year"], dt["month"], dt["day"] + dofs, hutc, latitude, longitude).x
+		if float(ms["alt"]) > 30.0 and sa < -8.0:
+			time_of_day = t; sim_day += dofs
+			_aim_camera_at(float(ms["alt"]), float(ms["az"]))
+			return
+	time_of_day = 23.0   # 못 찾으면 기본 야간
+
+# 연출 복귀 — 저장한 원래 설정으로 복원하고 모든 특수현상 끔
+func _restore_showcase() -> void:
+	if not _showcase_active:
+		return
+	var s: Dictionary = _showcase_saved
+	time_of_day = s["time"]; latitude = s["lat"]; longitude = s["lon"]
+	weather_type = s["weather"]; real_time_mode = s["rt"]
+	sim_month = s["month"]; sim_day = s["day"]
+	_camera._yaw = s["yaw"]; _camera._pitch = s["pitch"]; _camera.update(0.0)
+	_sky.set_cloud_override(s["cloud"], s["cloudcov"])
+	_sky.set_aurora(false); _sky.set_eclipse("solar", false); _sky.set_eclipse("lunar", false)
+	_sky.set_blue_moon(false); _sky.set_rainbow(false); _sky.set_comet(false)
+	_showcase_active = false
+	_update_all(0.0)
 
 # 특수현상 강도 슬라이더
 func _on_test_param(name: String, value: float) -> void:
