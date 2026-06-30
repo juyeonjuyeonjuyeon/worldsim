@@ -577,6 +577,9 @@ uniform vec3  cloud_base   : source_color = vec3(0.85, 0.86, 0.88);
 uniform float brightness   : hint_range(0.0, 2.0)  = 1.0;
 uniform vec3  sun_dir      = vec3(0.0, 1.0, 0.0);
 uniform vec3  sun_color    : source_color = vec3(1.0, 0.95, 0.80);
+// 운형별 본체 불투명도 — 광학두께(density)와 분리. 적운=진한 흰 뭉게(0.9), 권운=옅은 줄기(0.4).
+// 이전엔 alpha=cov×density라 적운(density 0.28)·권운(0.05)이 너무 투명해 거의 안 보였음.
+uniform float body_opacity : hint_range(0.0, 1.0)  = 0.85;
 
 // sin() 기반 해시의 격자무늬 문제 해결 — fract 곱 해시
 float hash2(vec2 p) {
@@ -620,14 +623,16 @@ void fragment() {
 		fbm5(uv * 0.42 + vec2(5.20, 1.30))
 	) * 2.0 - 1.0;
 	float n = fbm5(uv + warp_str * warp);
-	float a = smoothstep(1.0 - coverage, 1.0 - coverage + softness, n) * density;
+	// 구름 존재 마스크 [0,1] — coverage가 하늘 덮는 비율을 결정(불투명도와 분리).
+	float cov    = smoothstep(1.0 - coverage, 1.0 - coverage + softness, n);
 	// 태양 고도 (0=지평선, 1=천정)
 	float sun_up = clamp(sun_dir.y, 0.0, 1.0);
-	// 가장자리 계수: alpha 낮은 곳(얇은 부분)일수록 1
-	float thin   = clamp(1.0 - a / max(density, 0.01), 0.0, 1.0);
-	// 구름 바닥 음영 — density×2 로 누적운(적운) 아래면 확실히 어둡게
-	// 권운(density≈0.05): shadow≈0.95(거의 흰색), 적운(0.28): ≈0.69, 난층운(1.0): ≈0.45
-	float shadow = mix(1.0, 0.45, clamp(density * 2.0, 0.0, 1.0) * sqrt(clamp(a, 0.0, 1.0)));
+	// 가장자리 계수: 마스크 낮은 곳(얇은 가장자리)일수록 1 → 실버 라이닝·반투명
+	float thin   = clamp(1.0 - cov, 0.0, 1.0);
+	// 구름 바닥 음영 — 광학두께(density=1−exp(−τ/12))가 클수록 바닥 어둡게.
+	// 권운(density≈0.05): shadow≈0.97(흰색), 적운(0.28): ≈0.85(밝은 흰 뭉게),
+	// 난층운/비(0.78~): ≈0.55(어두운 회색). cov로 가장자리는 덜 어둡게.
+	float shadow = mix(1.0, 0.45, clamp(density, 0.0, 1.0) * cov);
 	vec3  col    = cloud_base * shadow;
 	// 노을·여명 구름 적화: 태양이 낮을수록(고도 0~17°) 구름 밑면이 적화된 직사광(sun_color는
 	// GDScript에서 지평선에 주황으로 물듦)을 받아 전체가 따뜻하게 빛남 — 실제 일몰 구름이
@@ -638,9 +643,10 @@ void fragment() {
 	// 실버 라이닝: 얇은 가장자리에서 태양빛 투과 → 따뜻하고 밝은 테두리
 	col = mix(col, sun_color * 1.6, thin * sun_up * 0.55);
 	ALBEDO = col * brightness;
-	// 밤에는 brightness가 거의 0이므로 ALPHA도 함께 줄여 구름 노이즈 패턴이 남지 않도록 함
-	// edge0=0.07 > sky_brightness_safe_min(0.0625=1/16) 이므로 야간엔 ALPHA가 정확히 0
-	ALPHA  = a * smoothstep(0.07, 0.5, brightness);
+	// 불투명도 = 존재 마스크 × 운형별 본체 불투명도. 광학두께와 분리 → 적운=진한 흰 뭉게(잘
+	// 보임), 권운=옅은 줄기(반투명). 가장자리(thin)는 부드럽게 페이드.
+	// 야간 가드: brightness≈0이면 ALPHA=0(구름 노이즈 안 남음). edge0=0.07>1/16.
+	ALPHA  = cov * body_opacity * smoothstep(0.07, 0.5, brightness);
 }
 """
 	_cloud_shader_mat = ShaderMaterial.new()
@@ -1575,13 +1581,16 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	#   권운 scale=1.5 → 2667m 큰 줄기, 적운 scale=4 → 1000m 뭉게구름, 층운/비 scale=2~2.5 → 넓은 덩어리
 	# stretch: 바람 방향으로 이방성 늘이기 — 권운(4×=실 모양), 나머지(1×=등방)
 	# warp: 도메인 워핑 강도 — 권운(낮음=직선 얼음결정), 적란운(높음=격렬한 대류)
+	# opacity = 운형별 본체 불투명도(광학두께와 분리): 적운=진한 흰 뭉게(0.92), 권운=옅은 줄기(0.42).
+	# scale = 4000m 평면의 노이즈 셀 수(클수록 셀 작고 많음). 평면이 낮아(y≈60~250m) 셀이
+	#   하나면 하늘을 다 덮어 "빈 셀"에 들어가면 구름이 안 보였음 → 셀을 작고 많게(scale↑).
 	var shape_presets := {
-		"CLEAR":    {"visible": false, "y":  20.0, "scale": 6.0,  "soft": 0.25, "warp": 0.40, "stretch": 1.0, "base": Color(0.95, 0.95, 0.96)},
-		"CIRRUS":   {"visible": true,  "y": 250.0, "scale": 1.5,  "soft": 0.38, "warp": 0.08, "stretch": 4.0, "base": Color(0.96, 0.97, 1.00)},
-		"CUMULUS":  {"visible": true,  "y":  60.0, "scale": 4.0,  "soft": 0.16, "warp": 0.50, "stretch": 1.0, "base": Color(0.87, 0.88, 0.90)},
-		"OVERCAST": {"visible": true,  "y":  25.0, "scale": 2.0,  "soft": 0.10, "warp": 0.30, "stretch": 1.0, "base": Color(0.62, 0.63, 0.66)},
-		"RAIN":     {"visible": true,  "y":  22.0, "scale": 2.5,  "soft": 0.15, "warp": 0.60, "stretch": 1.0, "base": Color(0.32, 0.33, 0.36)},
-		"SNOW":     {"visible": true,  "y":  28.0, "scale": 2.5,  "soft": 0.18, "warp": 0.40, "stretch": 1.0, "base": Color(0.58, 0.60, 0.63)},
+		"CLEAR":    {"visible": false, "y":  20.0, "scale": 6.0,  "soft": 0.25, "warp": 0.40, "stretch": 1.0, "base": Color(0.95, 0.95, 0.96), "opacity": 0.85},
+		"CIRRUS":   {"visible": true,  "y": 250.0, "scale": 7.0,  "soft": 0.38, "warp": 0.10, "stretch": 4.0, "base": Color(0.96, 0.97, 1.00), "opacity": 0.42},
+		"CUMULUS":  {"visible": true,  "y":  60.0, "scale": 11.0, "soft": 0.14, "warp": 0.50, "stretch": 1.0, "base": Color(0.92, 0.93, 0.95), "opacity": 0.92},
+		"OVERCAST": {"visible": true,  "y":  25.0, "scale": 7.0,  "soft": 0.12, "warp": 0.30, "stretch": 1.0, "base": Color(0.62, 0.63, 0.66), "opacity": 0.95},
+		"RAIN":     {"visible": true,  "y":  22.0, "scale": 8.0,  "soft": 0.15, "warp": 0.60, "stretch": 1.0, "base": Color(0.32, 0.33, 0.36), "opacity": 0.95},
+		"SNOW":     {"visible": true,  "y":  28.0, "scale": 8.0,  "soft": 0.18, "warp": 0.40, "stretch": 1.0, "base": Color(0.58, 0.60, 0.63), "opacity": 0.92},
 	}
 	var shape: Dictionary = shape_presets.get(weather_type, shape_presets["CLEAR"])
 	var coverage: float   = cloud_props["okta"]
@@ -1593,13 +1602,14 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	var warm: float = 1.0 - clampf(abs(latitude) / 60.0, 0.0, 1.0)
 	# 계절: 국지 여름=대류 강화(적운 깊고 대비 큼), 겨울=층운형. 남반구 6개월 반전.
 	var m_local: float = float(month) if latitude >= 0.0 else fmod(float(month) + 6.0 - 1.0, 12.0) + 1.0
-	var summer: float  = 0.5 - 0.5 * cos((m_local - 7.0) * 2.0 * PI / 12.0)  # 7월≈1(북반구 한여름)
+	# 7월(m=7)에 1, 1월에 0. cos((m−7)·2π/12)는 7월=1 → (1+cos)/2 사용해야 7월=1.
+	var summer: float  = 0.5 + 0.5 * cos((m_local - 7.0) * 2.0 * PI / 12.0)  # 7월≈1(북반구 한여름)
 	# 대류 활성도 = 따뜻한 기후 + 여름 (적운·적란운 계열에서 셀 크게·운저 변조)
 	var convect: float = clampf(0.35 * warm + 0.65 * summer, 0.0, 1.0)
-	# 셀 크기: noise_scale↓ = 셀 큼. 대류 강하면(적운류) 셀을 키워 뭉게구름 크게.
-	#   권운·층운·비·눈 같은 비대류형은 변조 약하게(0.15), 적운만 강하게(1.0).
-	var convect_w: float = 1.0 if weather_type == "CUMULUS" else 0.18
-	var scale_mod: float = shape["scale"] * (1.0 - 0.35 * convect * convect_w)   # 최대 35% 셀 확대
+	# 대류 강한 계절·기후(여름·열대)일수록 적운이 더 많이 발달 → 셀 수↑(noise_scale↑).
+	#   적운에만 강하게 적용, 비대류형은 약하게. (이전엔 셀을 키워 오히려 안 보였음)
+	var convect_w: float = 1.0 if weather_type == "CUMULUS" else 0.2
+	var scale_mod: float = shape["scale"] * (1.0 + 0.3 * convect * convect_w)   # 여름 대류 시 셀 더 많이
 	# 운저 고도: 따뜻·건조 기후일수록 LCL 높아 운저 상승(모델 압축 좌표에서 소폭).
 	var y_mod: float = shape["y"] * (1.0 + 0.5 * warm * float(shape["y"] > 30.0))
 
@@ -1612,6 +1622,7 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	_cloud_shader_mat.set_shader_parameter("warp_str",      shape["warp"])
 	_cloud_shader_mat.set_shader_parameter("stretch_ratio", shape["stretch"])
 	_cloud_shader_mat.set_shader_parameter("cloud_base",    shape["base"])
+	_cloud_shader_mat.set_shader_parameter("body_opacity",  shape["opacity"])
 	_cloud_shader_mat.set_shader_parameter("brightness",    sky_brightness_safe)
 
 	# 태양 방향·색상 → 실버 라이닝 및 바닥 음영 연산
