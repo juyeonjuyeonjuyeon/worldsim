@@ -628,6 +628,9 @@ uniform vec3  sun_color    : source_color = vec3(1.0, 0.95, 0.80);
 // 운형별 본체 불투명도 — 광학두께(density)와 분리. 적운=진한 흰 뭉게(0.9), 권운=옅은 줄기(0.4).
 // 이전엔 alpha=cov×density라 적운(density 0.28)·권운(0.05)이 너무 투명해 거의 안 보였음.
 uniform float body_opacity : hint_range(0.0, 1.0)  = 0.85;
+// 야간 구름 조명색 = 달빛+스카이글로우(GDScript에서 달 위상·고도로 계산, ÷노출 보정 전 절대값).
+// 이전엔 야간에 ALPHA를 0으로 죽여 구름이 통째로 사라지는 버그 → 달빛 받은 어두운 회색 실루엣 유지.
+uniform vec3  night_light  : source_color = vec3(0.05, 0.055, 0.07);
 
 // sin() 기반 해시의 격자무늬 문제 해결 — fract 곱 해시
 float hash2(vec2 p) {
@@ -681,20 +684,22 @@ void fragment() {
 	// 권운(density≈0.05): shadow≈0.97(흰색), 적운(0.28): ≈0.85(밝은 흰 뭉게),
 	// 난층운/비(0.78~): ≈0.55(어두운 회색). cov로 가장자리는 덜 어둡게.
 	float shadow = mix(1.0, 0.45, clamp(density, 0.0, 1.0) * cov);
-	vec3  col    = cloud_base * shadow;
+	vec3  day_col = cloud_base * shadow;
 	// 노을·여명 구름 적화: 태양이 낮을수록(고도 0~17°) 구름 밑면이 적화된 직사광(sun_color는
-	// GDScript에서 지평선에 주황으로 물듦)을 받아 전체가 따뜻하게 빛남 — 실제 일몰 구름이
-	// 분홍·주황으로 underlit 되는 물리현상. 높은 태양(sun_low=0)에선 완전 무영향(주간 회귀 없음).
-	// ※ 렌더 검수 대기: 강도(1.35·0.6)는 사람 눈 확인 후 튜닝 필요.
+	// GDScript에서 지평선에 주황으로 물듦)을 받아 따뜻하게 빛남 — 실제 일몰 구름의 분홍·주황 underlit.
 	float sun_low = 1.0 - smoothstep(0.0, 0.30, sun_dir.y);
-	col = mix(col, col * sun_color * 1.35, sun_low * 0.6);
+	day_col = mix(day_col, day_col * sun_color * 1.35, sun_low * 0.6);
 	// 실버 라이닝: 얇은 가장자리에서 태양빛 투과 → 따뜻하고 밝은 테두리
-	col = mix(col, sun_color * 1.6, thin * sun_up * 0.55);
+	day_col = mix(day_col, sun_color * 1.6, thin * sun_up * 0.55);
+	// 주간/야간 조명 혼합: 태양이 지면 달빛+스카이글로우(night_light)로 어둡게 비춤(구름 안 사라짐).
+	float day_f = smoothstep(-0.12, 0.06, sun_dir.y);
+	vec3  night_col = cloud_base * night_light;   // 달빛 받은 어두운 회색 구름 밑면
+	vec3  col = mix(night_col, day_col, day_f);
 	ALBEDO = col * brightness;
-	// 불투명도 = 존재 마스크 × 운형별 본체 불투명도. 광학두께와 분리 → 적운=진한 흰 뭉게(잘
-	// 보임), 권운=옅은 줄기(반투명). 가장자리(thin)는 부드럽게 페이드.
-	// 야간 가드: brightness≈0이면 ALPHA=0(구름 노이즈 안 남음). edge0=0.07>1/16.
-	ALPHA  = cov * body_opacity * smoothstep(0.07, 0.5, brightness);
+	// 불투명도 = 존재 마스크 × 운형별 본체 불투명도. 야간엔 0으로 죽이지 않고 약간 옅게(은은한
+	// 실루엣/달빛 회색)만 — 노을·달밤에도 구름이 살아남음(버그 수정).
+	float night_alpha = mix(0.62, 1.0, day_f);
+	ALPHA  = cov * body_opacity * night_alpha;
 }
 """
 	_cloud_shader_mat = ShaderMaterial.new()
@@ -1407,13 +1412,21 @@ func _update_sky_and_lights(sun_altaz: Vector2, moon: Dictionary, cloud_props: D
 	_moon_mesh.visible = moon_alt > -3.5 and moon_cloud_fade > 0.01
 	# 달 후광: 달 위치에 글로우 빌보드 배치. 강도 = 위상(밝기)×지평페이드×밤도×구름.
 	# 밤에 달이 떠 있을 때만 부드러운 헤일로로 존재감. 디스크 각지름은 동결(불변).
+	var moon_night_f: float = smoothstep(2.0, -8.0, elevation)   # 태양 질수록 1
+	# 달 밝기는 위상에 비선형(보름≈반달의 ~12배, 충효과). 글로우도 밝기 비례여야 함 →
+	# pow(illum, 2.3)으로 초승달은 글로우 거의 없고 보름만 뚜렷(과학적으로 정확). (버그 수정)
+	var moon_bright_f: float = pow(clampf(moon_illum, 0.0, 1.0), 2.3)
 	if is_instance_valid(_moon_glow_mesh):
 		_moon_glow_mesh.global_position = cam_origin + moon_dir * 100.0
-		var moon_night_f: float = smoothstep(2.0, -8.0, elevation)   # 태양 질수록 1
-		var glow_s: float = moon_illum * moon_horizon_fade * moon_night_f * moon_cloud_fade
+		var glow_s: float = moon_bright_f * moon_horizon_fade * moon_night_f * moon_cloud_fade
 		_moon_glow_mesh.visible = glow_s > 0.005
 		_moon_glow_mat.set_shader_parameter("glow_str", glow_s)
 		_moon_glow_mat.set_shader_parameter("exposure_safe", sky_brightness_safe)
+	# 야간 구름 조명색: 스카이글로우 바닥 + 달빛(위상·고도 비례). 구름이 밤에도 달빛 회색
+	# 실루엣으로 남게(버그①). 밝기 비례라 초승달 밤엔 거의 검은 실루엣, 보름엔 은은한 회색.
+	var moon_vis_f: float = moon_bright_f * smoothstep(-2.0, 8.0, moon_alt)
+	var night_light_col := Vector3(0.030, 0.035, 0.048) + Vector3(0.11, 0.125, 0.17) * moon_vis_f
+	_cloud_shader_mat.set_shader_parameter("night_light", night_light_col)
 	# 태양은 얇은 구름에서도 어느 정도 보임 (달보다 밝아서)
 	var sun_cloud_fade: float = clampf(1.0 - sky_overcast_amt * 0.85, 0.0, 1.0)
 	_sun_shader_mat.set_shader_parameter("cloud_fade", sun_cloud_fade)
