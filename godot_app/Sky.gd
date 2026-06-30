@@ -2076,14 +2076,21 @@ void fragment() {
 	float lat_band  = exp(-pow((dot_north - lat_peak) / lat_width, 2.0));
 	// 아래 방향 억제 (지평선 이하)
 	float above     = smoothstep(-0.05, 0.15, vd.y);
-	// 커튼 애니메이션: 방위각에 따라 변하는 시간 위상
-	float az        = atan(vd.x, -vd.z);
-	float curtain   = 0.5 + 0.5 * sin(az * 3.0 + time_phase * 0.8)
-	                + 0.25 * sin(az * 7.0 + time_phase * 1.3)
-	                + 0.15 * sin(vd.y * 5.0 + time_phase * 0.5);
+	// 커튼 위상 = 수평 평면파(vd.xz). 방위각(atan)은 천정·자기극에서 특이점→바람개비 솔기.
+	// 평면파는 등위상선이 평행 직선이라 어떤 점에서도 수렴 안 함(천정 솔기 완전 소멸).
+	// 자기북극 방향으로 정렬된 두 수평축(refA·refB)에 투영해 커튼 주름이 오로라 띠를 가로지름.
+	vec3 mn   = normalize(mag_north);
+	vec3 refA = cross(mn, vec3(0.0, 1.0, 0.0));
+	refA = (length(refA) < 0.01) ? vec3(1.0, 0.0, 0.0) : normalize(refA);
+	vec3 refB = normalize(cross(mn, refA));
+	float pA = dot(vd, refA);   // 자기축에 수직한 수평 좌표 (천정에서도 연속)
+	float pB = dot(vd, refB);
+	float curtain   = 0.5 + 0.5 * sin(pA * 6.0 + time_phase * 0.8)
+	                + 0.25 * sin(pB * 9.0 + time_phase * 1.3)
+	                + 0.15 * sin(dot_north * 9.0 + time_phase * 0.5);
 	curtain = clamp(curtain, 0.0, 1.0);
-	// 수직 스트리밍 (자기력선 따라)
-	float stream    = abs(sin(vd.y * 18.0 + az * 2.0 + time_phase * 2.5)) * 0.3;
+	// 수직 스트리밍 (자기력선 따라 — 위도방향 dot_north + 수평 평면파로 줄무늬, 특이점 없음)
+	float stream    = abs(sin(dot_north * 40.0 + pA * 12.0 + time_phase * 2.5)) * 0.3;
 	// 오로라 색 = 원자 발광선 + 발광 고도 구조(물리). 557nm 산소 녹색이 ~100km에서
 	// 모든 오로라의 기본 우세색. 강한 폭풍(KP↑)에 상단 630nm 산소 적색(200km+),
 	// 하단 N2+ 청자색(~90km) 추가. 시야 높이(vd.y)로 적(상)·녹(중)·자(하) 수직 분리.
