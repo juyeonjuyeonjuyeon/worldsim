@@ -176,6 +176,11 @@ func _maybe_auto_screenshot() -> void:
 	if wx_idx >= 0 and wx_idx + 1 < args.size():
 		weather_type = args[wx_idx + 1]
 		rain_rate = 15.0
+	var cl_idx := args.find("--cloud")
+	if cl_idx >= 0 and cl_idx + 1 < args.size():
+		var cl_cov := args.find("--cloudcov")
+		var covv: float = float(args[cl_cov + 1]) if cl_cov >= 0 and cl_cov + 1 < args.size() else 0.6
+		_sky.set_cloud_override(args[cl_idx + 1], covv)
 	if args.has("--force-rainbow"):
 		_sky.force_rainbow(true)
 	if args.has("--blue-moon"):
@@ -308,6 +313,8 @@ func _on_settings_confirmed(s: Dictionary) -> void:
 	if need_rebuild:
 		_ui.font_scale = s["font_scale"]
 	weather_type       = s.get("weather_type",       weather_type)
+	if s.has("cloud_type"):
+		_sky.set_cloud_override(s["cloud_type"], s.get("cloud_coverage", -1.0))
 	rain_rate          = s.get("rain_rate",          rain_rate)
 	overcast_intensity = s.get("overcast_intensity", overcast_intensity)
 	wind_enabled       = s.get("wind_enabled",       wind_enabled)

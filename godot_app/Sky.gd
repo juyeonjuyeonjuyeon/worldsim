@@ -15,6 +15,9 @@ var _cloud_tau_smooth: float        = 0.0   # 날씨 전환 때 tau를 부드럽
 
 var show_constellations: bool = false  # UI 토글로 제어
 var show_trails: bool         = false  # 태양/달 일일 호 표시 토글
+# 구름 수동 오버라이드 — UI 구름 드롭다운+슬라이더. "AUTO"면 날씨(weather_type)에서 자동.
+var cloud_override: String         = "AUTO"
+var cloud_coverage_override: float = -1.0   # <0 이면 날씨 okta 사용
 
 var _sun_light: DirectionalLight3D
 var _moon_light: DirectionalLight3D
@@ -190,6 +193,11 @@ func set_comet(on: bool) -> void:
 
 func set_rainbow(on: bool) -> void:
 	_rainbow_force = on
+
+# UI 구름 컨트롤: 운형 직접 지정(""·"AUTO"=날씨 자동) + 운량(0~1, <0=날씨 okta).
+func set_cloud_override(type_name: String, coverage: float) -> void:
+	cloud_override = type_name if type_name != "" else "AUTO"
+	cloud_coverage_override = coverage
 
 func _load_star_catalog() -> void:
 	var f := FileAccess.open("res://stars.json", FileAccess.READ)
@@ -1654,17 +1662,29 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	# opacity = 운형별 본체 불투명도(광학두께와 분리): 적운=진한 흰 뭉게(0.92), 권운=옅은 줄기(0.42).
 	# scale = 4000m 평면의 노이즈 셀 수(클수록 셀 작고 많음). 평면이 낮아(y≈60~250m) 셀이
 	#   하나면 하늘을 다 덮어 "빈 셀"에 들어가면 구름이 안 보였음 → 셀을 작고 많게(scale↑).
-	var shape_presets := {
-		"CLEAR":    {"visible": false, "y":  20.0, "scale": 6.0,  "soft": 0.25, "warp": 0.40, "stretch": 1.0, "base": Color(0.95, 0.95, 0.96), "opacity": 0.85},
-		"CIRRUS":   {"visible": true,  "y": 250.0, "scale": 7.0,  "soft": 0.38, "warp": 0.10, "stretch": 4.0, "base": Color(0.96, 0.97, 1.00), "opacity": 0.42},
-		"CUMULUS":  {"visible": true,  "y":  60.0, "scale": 11.0, "soft": 0.14, "warp": 0.50, "stretch": 1.0, "base": Color(0.92, 0.93, 0.95), "opacity": 0.92},
-		"OVERCAST": {"visible": true,  "y":  25.0, "scale": 7.0,  "soft": 0.12, "warp": 0.30, "stretch": 1.0, "base": Color(0.62, 0.63, 0.66), "opacity": 0.95},
-		"RAIN":     {"visible": true,  "y":  22.0, "scale": 8.0,  "soft": 0.15, "warp": 0.60, "stretch": 1.0, "base": Color(0.32, 0.33, 0.36), "opacity": 0.95},
-		"SNOW":     {"visible": true,  "y":  28.0, "scale": 8.0,  "soft": 0.18, "warp": 0.40, "stretch": 1.0, "base": Color(0.58, 0.60, 0.63), "opacity": 0.92},
+	# 운형 카탈로그(국제 10종 + 특수). thick=광학두께(바닥 음영용). 2D 평면 근사라
+	# 적란운 수직발달·렌즈운 3D는 볼류메트릭(나중). y=운저고도, scale=셀 수(클수록 작고 많음).
+	var cloud_presets := {
+		"NONE":         {"visible": false, "y":  20.0, "scale": 6.0,  "soft": 0.25, "warp": 0.40, "stretch": 1.0, "base": Color(0.95, 0.95, 0.96), "opacity": 0.85, "thick": 0.0},
+		"CIRRUS":       {"visible": true,  "y": 250.0, "scale": 7.0,  "soft": 0.38, "warp": 0.10, "stretch": 4.0, "base": Color(0.96, 0.97, 1.00), "opacity": 0.42, "thick": 0.05},  # 새털구름
+		"CIRROCUMULUS": {"visible": true,  "y": 240.0, "scale": 17.0, "soft": 0.16, "warp": 0.18, "stretch": 1.6, "base": Color(0.95, 0.96, 1.00), "opacity": 0.40, "thick": 0.06},  # 비늘구름(고등어)
+		"ALTOCUMULUS":  {"visible": true,  "y": 120.0, "scale": 10.0, "soft": 0.16, "warp": 0.30, "stretch": 1.4, "base": Color(0.84, 0.86, 0.91), "opacity": 0.62, "thick": 0.30},  # 양떼구름
+		"CUMULUS":      {"visible": true,  "y":  60.0, "scale": 11.0, "soft": 0.14, "warp": 0.50, "stretch": 1.0, "base": Color(0.92, 0.93, 0.95), "opacity": 0.92, "thick": 0.30},  # 뭉게구름
+		"STRATOCUMULUS":{"visible": true,  "y":  50.0, "scale": 6.0,  "soft": 0.12, "warp": 0.30, "stretch": 1.2, "base": Color(0.66, 0.68, 0.72), "opacity": 0.88, "thick": 0.55},  # 층적운
+		"STRATUS":      {"visible": true,  "y":  30.0, "scale": 5.0,  "soft": 0.12, "warp": 0.25, "stretch": 1.0, "base": Color(0.62, 0.63, 0.66), "opacity": 0.95, "thick": 0.60},  # 층운(흐림)
+		"NIMBOSTRATUS": {"visible": true,  "y":  22.0, "scale": 8.0,  "soft": 0.15, "warp": 0.60, "stretch": 1.0, "base": Color(0.32, 0.33, 0.36), "opacity": 0.95, "thick": 0.85},  # 난층운(비구름)
+		"CUMULONIMBUS": {"visible": true,  "y":  45.0, "scale": 6.0,  "soft": 0.13, "warp": 0.70, "stretch": 1.0, "base": Color(0.26, 0.27, 0.31), "opacity": 0.97, "thick": 0.92},  # 적란운(먹구름)
 	}
-	var shape: Dictionary = shape_presets.get(weather_type, shape_presets["CLEAR"])
-	var coverage: float   = cloud_props["okta"]
-	var density: float    = sky_overcast_amt_current
+	# 날씨 → 운형 자동 매핑(오버라이드 없을 때)
+	var wx_to_cloud := {
+		"CLEAR": "NONE", "CIRRUS": "CIRRUS", "CUMULUS": "CUMULUS",
+		"OVERCAST": "STRATUS", "RAIN": "NIMBOSTRATUS", "SNOW": "NIMBOSTRATUS",
+	}
+	var ctype: String = cloud_override if cloud_override != "AUTO" else (wx_to_cloud.get(weather_type, "NONE") as String)
+	var shape: Dictionary = cloud_presets.get(ctype, cloud_presets["NONE"])
+	var coverage: float   = cloud_coverage_override if cloud_coverage_override >= 0.0 else float(cloud_props["okta"])
+	# 광학두께: 운형 기본값과 날씨 tau 중 큰 값(비/눈 강수 강도 반영)
+	var density: float    = maxf(float(shape["thick"]), sky_overcast_amt_current)
 
 	# ── 좌표·계절별 구름 형태 변조 (물리 기상) ──────────────────────────────
 	# 기후(위도): 열대=따뜻·불안정→대류 깊고 셀 큼·운저 높음(LCL↑); 한대=차갑·안정→
@@ -1678,8 +1698,8 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	var convect: float = clampf(0.35 * warm + 0.65 * summer, 0.0, 1.0)
 	# 대류 강한 계절·기후(여름·열대)일수록 적운이 더 많이 발달 → 셀 수↑(noise_scale↑).
 	#   적운에만 강하게 적용, 비대류형은 약하게. (이전엔 셀을 키워 오히려 안 보였음)
-	var convect_w: float = 1.0 if weather_type == "CUMULUS" else 0.2
-	var scale_mod: float = shape["scale"] * (1.0 + 0.3 * convect * convect_w)   # 여름 대류 시 셀 더 많이
+	var convect_w: float = 1.0 if (ctype == "CUMULUS" or ctype == "CUMULONIMBUS" or ctype == "ALTOCUMULUS") else 0.2
+	var scale_mod: float = float(shape["scale"]) * (1.0 + 0.3 * convect * convect_w)   # 여름 대류 시 셀 더 많이
 	# 운저 고도: 따뜻·건조 기후일수록 LCL 높아 운저 상승(모델 압축 좌표에서 소폭).
 	var y_mod: float = shape["y"] * (1.0 + 0.5 * warm * float(shape["y"] > 30.0))
 

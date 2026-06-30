@@ -13,6 +13,9 @@ signal play_state_changed(playing: bool)
 const _CFG := "user://window_state.cfg"
 const WEATHER_KEYS   := ["CLEAR", "CIRRUS", "CUMULUS", "OVERCAST", "RAIN", "SNOW"]
 const WEATHER_LABELS := ["맑음", "얇은 구름", "뭉게구름", "흐림", "비", "눈"]
+# 구름 운형(날씨와 독립). AUTO=날씨에서 자동.
+const CLOUD_KEYS   := ["AUTO", "NONE", "CIRRUS", "CIRROCUMULUS", "ALTOCUMULUS", "CUMULUS", "STRATOCUMULUS", "STRATUS", "NIMBOSTRATUS", "CUMULONIMBUS"]
+const CLOUD_LABELS := ["자동", "없음", "새털구름(권운)", "비늘구름(권적운)", "양떼구름(고적운)", "뭉게구름(적운)", "층적운", "층운", "비구름(난층운)", "먹구름(적란운)"]
 
 var font_scale: float  = 2.0
 var panel_w_saved: int = 0
@@ -430,6 +433,46 @@ func _build_all(init: Dictionary) -> void:
 		_toggle_weather_controls(not p)
 		_apply()
 	)
+
+	# ── 구름 (비/눈과 독립: 운형 + 운량 + 프리셋) ──
+	vb_w.add_child(HSeparator.new())
+	var cloud_opt := OptionButton.new()
+	cloud_opt.add_theme_font_size_override("font_size", fs_ctrl)
+	cloud_opt.get_popup().add_theme_font_size_override("font_size", fs_ctrl)
+	for cl in CLOUD_LABELS:
+		cloud_opt.add_item(cl)
+	cloud_opt.select(0)   # 자동
+	vb_w.add_child(_labeled("구름", cloud_opt))
+	var cloudcov_row := _slider_row("운량(%)", 0.0, 100.0, 60.0,
+		func(v): _pending["cloud_coverage"] = v / 100.0)
+	vb_w.add_child(cloudcov_row)
+	cloud_opt.item_selected.connect(func(idx):
+		_pending["cloud_type"] = CLOUD_KEYS[idx]
+		# 자동이면 운량 슬라이더 무시(<0), 아니면 슬라이더값 사용
+		cloudcov_row.visible = idx != 0
+		_apply()
+	)
+	cloudcov_row.visible = false   # 자동일 땐 숨김
+	# 프리셋 버튼: 누르면 운형 드롭다운+운량을 그 값으로
+	var preset_row := HBoxContainer.new()
+	preset_row.add_theme_constant_override("separation", maxi(2, int(4 * s)))
+	for pr: Array in [["새털", "CIRRUS", 55], ["뭉게", "CUMULUS", 45], ["양떼", "ALTOCUMULUS", 70], ["먹구름", "CUMULONIMBUS", 90]]:
+		var pbtn := Button.new()
+		pbtn.text = pr[0]
+		pbtn.add_theme_font_size_override("font_size", fs_ctrl)
+		pbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var pkey: String = pr[1]
+		var pcov: float  = float(pr[2])
+		pbtn.pressed.connect(func():
+			var ki: int = CLOUD_KEYS.find(pkey)
+			cloud_opt.select(ki)
+			cloudcov_row.visible = true
+			_pending["cloud_type"] = pkey
+			_pending["cloud_coverage"] = pcov / 100.0
+			_apply()
+		)
+		preset_row.add_child(pbtn)
+	vb_w.add_child(preset_row)
 
 	var const_check := CheckBox.new()
 	const_check.text           = "별자리 선 표시"
