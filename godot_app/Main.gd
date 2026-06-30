@@ -125,6 +125,8 @@ func _ready() -> void:
 	_ui.view_mode_requested.connect(_set_view_mode)
 	_ui.aspect_requested.connect(_set_aspect)
 	_ui.test_event_requested.connect(_on_test_event)
+	_ui.test_toggle_requested.connect(_on_test_toggle)
+	_ui.test_param_changed.connect(_on_test_param)
 	_ui.eye_view_requested.connect(_on_eye_view_requested)
 	_ui.play_state_changed.connect(_on_play_state_changed)
 	_ui.build(_ui_init_dict())
@@ -228,6 +230,8 @@ func _maybe_auto_screenshot() -> void:
 		if hum_force >= 0.0: _env.humidity = hum_force
 		if ecl_pin >= 0.0: _sky._eclipse_test_t = ecl_pin
 		_update_all(0.0)
+	# UI 빌드(build()의 await)가 끝난 뒤 탭 선택 — 첫 프레임 양보 후 적용.
+	var uitab_idx := args.find("--uitab")
 	# 시간 고정 유지하며 여러 프레임 렌더 (하늘 radiance/노출 안정화)
 	for _i in range(40):
 		if fixed_time > -900.0:
@@ -235,6 +239,8 @@ func _maybe_auto_screenshot() -> void:
 			time_of_day = fixed_time
 		if hum_force >= 0.0: _env.humidity = hum_force
 		if ecl_pin >= 0.0: _sky._eclipse_test_t = ecl_pin
+		if uitab_idx >= 0 and uitab_idx + 1 < args.size():
+			_ui.select_tab(int(args[uitab_idx + 1]))
 		await get_tree().process_frame
 	var img: Image = get_viewport().get_texture().get_image()
 	img.save_png(out_path)
@@ -326,12 +332,23 @@ func _on_test_event(event_name: String) -> void:
 		"lightning": _sound.trigger_lightning()
 		"meteor":    _sky.trigger_meteor(false)
 		"shower":    _sky.trigger_meteor(true)
-		"comet":     _sky.trigger_comet_test()
-		"solar_eclipse":  _sky.trigger_eclipse("solar")
-		"lunar_eclipse":  _sky.trigger_eclipse("lunar")
-		"blue_moon":      _sky.trigger_blue_moon()
-		"aurora":         _sky.trigger_aurora_force()
-		"rainbow_force":  _sky.force_rainbow(!_sky._rainbow_force)  # 누를 때마다 토글
+
+# 특수현상 켜기/끄기 (체크박스)
+func _on_test_toggle(name: String, on: bool) -> void:
+	match name:
+		"aurora":         _sky.set_aurora(on)
+		"solar_eclipse":  _sky.set_eclipse("solar", on)
+		"lunar_eclipse":  _sky.set_eclipse("lunar", on)
+		"blue_moon":      _sky.set_blue_moon(on)
+		"rainbow":        _sky.set_rainbow(on)
+		"comet":          _sky.set_comet(on)
+
+# 특수현상 강도 슬라이더
+func _on_test_param(name: String, value: float) -> void:
+	match name:
+		"aurora_kp": _sky.set_aurora_kp(value)
+		"solar_t":   if _sky._eclipse_test == "solar": _sky.set_eclipse_progress(value)
+		"lunar_t":   if _sky._eclipse_test == "lunar": _sky.set_eclipse_progress(value)
 
 func _set_view_mode(mode: String) -> void:
 	_camera.set_view_mode(mode)

@@ -5,6 +5,8 @@ signal settings_confirmed(s: Dictionary)
 signal view_mode_requested(mode: String)
 signal aspect_requested(ratio: String)
 signal test_event_requested(event_name: String)
+signal test_toggle_requested(name: String, on: bool)   # 특수현상 켜기/끄기
+signal test_param_changed(name: String, value: float)  # 특수현상 강도 슬라이더
 signal eye_view_requested(enabled: bool)
 signal play_state_changed(playing: bool)
 
@@ -82,6 +84,11 @@ func build(init: Dictionary) -> void:
 func update_status(text: String) -> void:
 	if status_label:
 		status_label.text = text
+
+# 검수용: 탭 인덱스 선택 (0=날씨 1=시간 2=위치 3=카메라 4=테스트)
+func select_tab(idx: int) -> void:
+	if _tab and idx >= 0 and idx < _tab.get_tab_count():
+		_tab.current_tab = idx
 
 func update_time_ui(dt: Dictionary) -> void:
 	var y  := int(dt.get("year",  _cur_year))
@@ -700,9 +707,14 @@ func _build_all(init: Dictionary) -> void:
 	# ═════════════════════════════════════════════════════════
 	var vb_test := _make_tab(tab, "테스트")
 
+	# ── 순간 이벤트 (한 번 발생) ──
+	var ev_lbl := Label.new()
+	ev_lbl.text = "순간 이벤트"
+	ev_lbl.add_theme_font_size_override("font_size", _fs)
+	vb_test.add_child(ev_lbl)
 	var test_row := HBoxContainer.new()
 	test_row.add_theme_constant_override("separation", maxi(2, int(4 * s)))
-	for pair: Array in [["번개", "lightning"], ["별똥별", "meteor"], ["유성우", "shower"], ["혜성 토글", "comet"]]:
+	for pair: Array in [["번개", "lightning"], ["별똥별", "meteor"], ["유성우", "shower"]]:
 		var tbtn := Button.new()
 		tbtn.text                  = pair[0]
 		tbtn.add_theme_font_size_override("font_size", fs_ctrl)
@@ -711,24 +723,57 @@ func _build_all(init: Dictionary) -> void:
 		tbtn.pressed.connect(func(): test_event_requested.emit(ename))
 		test_row.add_child(tbtn)
 	vb_test.add_child(test_row)
+	vb_test.add_child(HSeparator.new())
 
-	# 특수현상 행 — 일식/월식은 Phase 1 미구현(투명), 나머지 구현 완료
-	var special_row := HBoxContainer.new()
-	special_row.add_theme_constant_override("separation", maxi(2, int(4 * s)))
-	for pair: Array in [["일식", "solar_eclipse", true], ["월식", "lunar_eclipse", true], ["오로라↑", "aurora", false], ["무지개↑", "rainbow_force", false]]:
-		var tbtn := Button.new()
-		tbtn.text                  = pair[0]
-		tbtn.add_theme_font_size_override("font_size", fs_ctrl)
-		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		if pair[2]:
-			tbtn.modulate.a = 0.50  # 미구현 표시 (일식/월식)
-			tbtn.tooltip_text = "미구현 (Phase 1)"
-		var ename: String = pair[1]
-		tbtn.pressed.connect(func(): test_event_requested.emit(ename))
-		special_row.add_child(tbtn)
-	vb_test.add_child(special_row)
+	# ── 지속 특수현상 (체크박스 켜기/끄기 + 강도 슬라이더) ──
+	var sp_lbl := Label.new()
+	sp_lbl.text = "특수현상 (켜기/끄기 + 강도)"
+	sp_lbl.add_theme_font_size_override("font_size", _fs)
+	vb_test.add_child(sp_lbl)
+	# 오로라: 토글 + KP(색·강도) 슬라이더
+	vb_test.add_child(_phenomenon_toggle("오로라", "aurora"))
+	vb_test.add_child(_phenomenon_slider("  KP 지수", 0.0, 9.0, 5.0, "aurora_kp", 0.1))
+	# 일식: 토글 + 진행도
+	vb_test.add_child(_phenomenon_toggle("일식 (개기↔부분)", "solar_eclipse"))
+	vb_test.add_child(_phenomenon_slider("  진행도", 0.0, 1.0, 1.0, "solar_t", 0.01))
+	# 월식: 토글 + 진행도
+	vb_test.add_child(_phenomenon_toggle("월식 (블러드문)", "lunar_eclipse"))
+	vb_test.add_child(_phenomenon_slider("  진행도", 0.0, 1.0, 1.0, "lunar_t", 0.01))
+	# 블루문·무지개·혜성: 토글만
+	vb_test.add_child(_phenomenon_toggle("블루문", "blue_moon"))
+	vb_test.add_child(_phenomenon_toggle("무지개", "rainbow"))
+	vb_test.add_child(_phenomenon_toggle("혜성", "comet"))
 
 	settings_btn.pressed.connect(func(): panel.visible = not panel.visible)
+
+# ── 특수현상 헬퍼 ────────────────────────────────────────────────────
+func _phenomenon_toggle(text: String, name: String) -> Control:
+	var cb := CheckBox.new()
+	cb.text = text
+	cb.add_theme_font_size_override("font_size", _fs)
+	cb.toggled.connect(func(on: bool): test_toggle_requested.emit(name, on))
+	return cb
+
+func _phenomenon_slider(text: String, lo: float, hi: float, val: float, name: String, step: float) -> Control:
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var l := Label.new()
+	l.text = "%s: %.2f" % [text, val]
+	l.add_theme_font_size_override("font_size", _fs)
+	box.add_child(l)
+	var sl := HSlider.new()
+	sl.min_value             = lo
+	sl.max_value             = hi
+	sl.step                  = step
+	sl.value                 = val
+	sl.custom_minimum_size   = Vector2(0, _slider_h)
+	sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sl.value_changed.connect(func(v):
+		test_param_changed.emit(name, v)
+		l.text = "%s: %.2f" % [text, v]
+	)
+	box.add_child(sl)
+	return box
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────────
 func _labeled(text: String, control: Control) -> Control:
