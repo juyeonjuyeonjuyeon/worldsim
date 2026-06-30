@@ -591,6 +591,12 @@ void fragment() {
 	// 권운(density≈0.05): shadow≈0.95(거의 흰색), 적운(0.28): ≈0.69, 난층운(1.0): ≈0.45
 	float shadow = mix(1.0, 0.45, clamp(density * 2.0, 0.0, 1.0) * sqrt(clamp(a, 0.0, 1.0)));
 	vec3  col    = cloud_base * shadow;
+	// 노을·여명 구름 적화: 태양이 낮을수록(고도 0~17°) 구름 밑면이 적화된 직사광(sun_color는
+	// GDScript에서 지평선에 주황으로 물듦)을 받아 전체가 따뜻하게 빛남 — 실제 일몰 구름이
+	// 분홍·주황으로 underlit 되는 물리현상. 높은 태양(sun_low=0)에선 완전 무영향(주간 회귀 없음).
+	// ※ 렌더 검수 대기: 강도(1.35·0.6)는 사람 눈 확인 후 튜닝 필요.
+	float sun_low = 1.0 - smoothstep(0.0, 0.30, sun_dir.y);
+	col = mix(col, col * sun_color * 1.35, sun_low * 0.6);
 	// 실버 라이닝: 얇은 가장자리에서 태양빛 투과 → 따뜻하고 밝은 테두리
 	col = mix(col, sun_color * 1.6, thin * sun_up * 0.55);
 	ALBEDO = col * brightness;
@@ -861,7 +867,7 @@ func update(
 	_update_bolt(lightning_flash, lightning_bolt_dist_km)
 	_update_meteor(sun_altaz, cloud_props, dt, hour_utc, latitude, longitude, delta)
 	_update_comet(sun_altaz, dt, hour_utc, latitude, longitude)
-	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, delta)
+	_update_cloud_visual(cloud_props, weather_type, wind_speed, wind_direction, wind_enabled, sun_altaz, latitude, int(dt.get("month", 6)), delta)
 	_update_rainbow(sun_altaz, moon, cloud_props, ground_wetness, delta)
 	_update_zodiacal_light(sun_altaz, cloud_props, delta)
 	_update_milkyway(dt, hour_utc, latitude, longitude, cloud_props, delta)
@@ -1521,7 +1527,7 @@ func _update_constellations(dt: Dictionary, hour_utc: float, latitude: float, lo
 		var visible_enough: bool = ac.x > -2.0  # 지평선 약간 아래도 표시
 		lbl.modulate = Color(0.65, 0.78, 1.0, lbl_alpha if visible_enough else 0.0)
 
-func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_speed: float, wind_direction: float, wind_enabled: bool, sun_altaz: Vector2, delta: float) -> void:
+func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_speed: float, wind_direction: float, wind_enabled: bool, sun_altaz: Vector2, latitude: float, month: int, delta: float) -> void:
 	# 운형별 실제 물리 파라미터
 	# Y 고도: 권운 8km→250m, 적운 1km→60m, 층운·난층운 500m→22~28m
 	# scale: 4000m 평면에서 구름 1개 크기 = 4000/scale m
@@ -1540,11 +1546,27 @@ func _update_cloud_visual(cloud_props: Dictionary, weather_type: String, wind_sp
 	var coverage: float   = cloud_props["okta"]
 	var density: float    = sky_overcast_amt_current
 
+	# ── 좌표·계절별 구름 형태 변조 (물리 기상) ──────────────────────────────
+	# 기후(위도): 열대=따뜻·불안정→대류 깊고 셀 큼·운저 높음(LCL↑); 한대=차갑·안정→
+	#   층운형 얇고 낮음·셀 작음. warm=1(적도)→0(극).
+	var warm: float = 1.0 - clampf(abs(latitude) / 60.0, 0.0, 1.0)
+	# 계절: 국지 여름=대류 강화(적운 깊고 대비 큼), 겨울=층운형. 남반구 6개월 반전.
+	var m_local: float = float(month) if latitude >= 0.0 else fmod(float(month) + 6.0 - 1.0, 12.0) + 1.0
+	var summer: float  = 0.5 - 0.5 * cos((m_local - 7.0) * 2.0 * PI / 12.0)  # 7월≈1(북반구 한여름)
+	# 대류 활성도 = 따뜻한 기후 + 여름 (적운·적란운 계열에서 셀 크게·운저 변조)
+	var convect: float = clampf(0.35 * warm + 0.65 * summer, 0.0, 1.0)
+	# 셀 크기: noise_scale↓ = 셀 큼. 대류 강하면(적운류) 셀을 키워 뭉게구름 크게.
+	#   권운·층운·비·눈 같은 비대류형은 변조 약하게(0.15), 적운만 강하게(1.0).
+	var convect_w: float = 1.0 if weather_type == "CUMULUS" else 0.18
+	var scale_mod: float = shape["scale"] * (1.0 - 0.35 * convect * convect_w)   # 최대 35% 셀 확대
+	# 운저 고도: 따뜻·건조 기후일수록 LCL 높아 운저 상승(모델 압축 좌표에서 소폭).
+	var y_mod: float = shape["y"] * (1.0 + 0.5 * warm * float(shape["y"] > 30.0))
+
 	_cloud_mesh.visible    = shape["visible"]
-	_cloud_mesh.position.y = shape["y"]
+	_cloud_mesh.position.y = y_mod
 	_cloud_shader_mat.set_shader_parameter("coverage",    coverage)
 	_cloud_shader_mat.set_shader_parameter("density",     clampf(density, 0.0, 1.0))
-	_cloud_shader_mat.set_shader_parameter("noise_scale",   shape["scale"])
+	_cloud_shader_mat.set_shader_parameter("noise_scale",   scale_mod)
 	_cloud_shader_mat.set_shader_parameter("softness",      shape["soft"])
 	_cloud_shader_mat.set_shader_parameter("warp_str",      shape["warp"])
 	_cloud_shader_mat.set_shader_parameter("stretch_ratio", shape["stretch"])
