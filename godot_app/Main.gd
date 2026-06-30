@@ -60,6 +60,14 @@ var _auto_overcast_target: float   = 0.6
 var _auto_wind_speed_target: float = 0.0
 var _auto_wind_dir_target: float   = 0.0
 var _auto_wx_rng := RandomNumberGenerator.new()
+# ── 종관 이동 기압장 (자동날씨를 인과적으로 구동) ──────────────────────────
+# 고·저기압이 W→E로 통과하는 준주기 파동열. 기압 경향→구름/강수 시퀀스, 경도→풍향.
+var _synoptic_phase: float        = 0.0    # 시스템 통과 위상(시뮬일 누적)
+var _synoptic_period_days: float  = 4.0    # 시스템 간격(중위도 3~6일)
+var _synoptic_amp: float          = 10.0   # 기압 진폭 hPa(기후로 결정: 폭풍대=큼)
+var _pressure: float              = 1013.0 # 현재 합성 기압 hPa
+var _pressure_tend: float         = 0.0    # 기압 경향(hPa/일, 음수=하강·악화)
+var sim_pressure: float           = 1013.0 # 상태표시줄 노출용
 
 # ── 모듈 참조 ──
 var _sky        = null
@@ -135,6 +143,11 @@ func _ready() -> void:
 
 func _maybe_auto_screenshot() -> void:
 	var args := OS.get_cmdline_user_args()
+	# 자동날씨 기압모델 검증 모드: 기압장을 N 시뮬일 진행하며 날씨 시퀀스 출력 후 종료.
+	if args.has("--autowx-test"):
+		_run_autowx_test(args)
+		get_tree().quit()
+		return
 	var idx := args.find("--auto-screenshot")
 	if idx < 0:
 		return
@@ -424,6 +437,10 @@ func _update_all(delta: float) -> void:
 		var temp_disp: String = ("%.1f°F" % (sim_temperature * 9.0 / 5.0 + 32.0)) if use_fahrenheit \
 			else ("%.1f°C" % sim_temperature)
 		var hum_str: String = "습도 %.0f%%" % _env.humidity
+		if auto_weather:
+			# 기압 경향 화살표로 악화(↓)·개선(↑) 직관 표시
+			var arrow: String = "↓" if _pressure_tend < -0.2 else ("↑" if _pressure_tend > 0.2 else "→")
+			hum_str += "  %.0fhPa%s" % [sim_pressure, arrow]
 		var evt_parts: String = _sky.planet_events
 		if _sky.eclipse_status != "":
 			evt_parts = (_sky.eclipse_status + "  " + evt_parts) if evt_parts != "" else _sky.eclipse_status
@@ -509,71 +526,110 @@ static func _estimate_temperature(month: int, day: int, hour_local: float, latit
 
 func _update_auto_weather(delta: float, cur_month: int) -> void:
 	var sim_speed: float = 86400.0 / maxf(day_length_sec, 1.0)
+	var sim_days: float = delta * sim_speed / 86400.0   # 이번 프레임 경과 시뮬일
+
+	# 가끔 종관 시스템 파라미터(주기·진폭)를 기후에 맞춰 재설정 — 순수 주기성 방지
 	_auto_wx_sim_timer -= delta * sim_speed
 	if _auto_wx_sim_timer <= 0.0:
-		_roll_auto_weather(cur_month)
+		_roll_synoptic_params(cur_month)
+
+	# ── 이동 기압장: 준주기 파동열(고·저기압이 W→E 통과). 2개 하모닉=불규칙. ──
+	_synoptic_phase += sim_days / maxf(_synoptic_period_days, 0.5) * TAU
+	var ph: float    = _synoptic_phase
+	var wave: float   = 0.7 * sin(ph) + 0.3 * sin(2.3 * ph + 1.0)
+	var d_wave: float = 0.7 * cos(ph) + 0.3 * 2.3 * cos(2.3 * ph + 1.0)   # dwave/dphase
+	_pressure = 1013.0 + _synoptic_amp * wave
+	sim_pressure = _pressure
+	# 기압 경향(hPa/일): 음수=하강(악화), 양수=상승(개선). 부드럽게.
+	var tend: float = d_wave * _synoptic_amp / maxf(_synoptic_period_days, 0.5) * (TAU / TAU)
+	_pressure_tend = lerpf(_pressure_tend, tend, clampf(sim_days * 6.0, 0.05, 1.0))
+
+	# 정규화 기압: +면 고기압(맑음), -면 저기압(악천후)
+	var pn: float = (_pressure - 1013.0) / maxf(_synoptic_amp, 1.0)
+	var falling: bool = _pressure_tend < -0.2
+
+	# ── 기후 외피(통계): 강수 능력·구름량·눈경향 ──
+	var params: Dictionary = WorldSimWeather.get_params(latitude, cur_month)
+	var bias:   Dictionary = _get_climate_bias(latitude, longitude, cur_month)
+	var precip_cap: float = clampf(float(params["precip_prob"]) * float(bias["precip_mult"]) * 1.7, 0.0, 1.0)
+	var cloud_cap:  float = float(params["cloud_cover"])
+	var low_depth:  float = clampf(-pn, 0.0, 1.5)   # 저기압 깊이(0=평균, 클수록 깊음)
+
+	# ── 전선 시퀀스: 기압 수준+경향 → 운형 (저→고 순서로 권운→흐림→비→갬) ──
+	var new_wx: String = weather_type
+	if low_depth > 0.55 and precip_cap > 0.25:
+		new_wx = "RAIN"                                       # 저기압 골 = 전선 강수
+		_auto_rain_target = clampf(float(params["rain_rate_mean"]) * (0.6 + low_depth) * precip_cap * 1.6, 0.5, 55.0)
+	elif low_depth > 0.42:
+		new_wx = "OVERCAST"                                   # 깊은 저기압이나 건조기후 → 흐림(비 적음)
+		_auto_overcast_target = clampf(0.4 + low_depth * 0.45, 0.3, 0.9)
+		_auto_rain_target = 0.0
+	elif falling and pn < 0.35:
+		new_wx = "CIRRUS" if pn > 0.12 else "CUMULUS"         # 접근: 선행 권운 → 두꺼워지며 적운
+		_auto_rain_target = 0.0
+	elif pn > 0.35:
+		new_wx = "CLEAR"                                      # 강한 고기압
+		_auto_rain_target = 0.0
+	else:
+		new_wx = "CUMULUS" if (_pressure_tend < 0.15 and cloud_cap > 0.45) else "CLEAR"
+		_auto_rain_target = 0.0
+	# 강수면 온도로 눈/비 결정(결정적 — 프레임마다 흔들리지 않게). 기후 눈경향이 임계 보정.
+	if new_wx == "RAIN":
+		var snow_thresh: float = 1.0 + float(params["snow_bias"]) * 1.5
+		if sim_temperature < snow_thresh:
+			new_wx = "SNOW"
+	weather_type = new_wx
+
+	# ── 지형풍(geostrophic): 기압경도→풍속, 통과에 따른 풍향 veering ──
+	var prevail_dir: float = _prevailing_wind_dir(latitude)
+	var hemi: float = 1.0 if latitude >= 0.0 else -1.0
+	# 풍속 = 경도 세기(|d_wave|=고·저기압 사이에서 최대)에 비례
+	_auto_wind_speed_target = clampf(1.5 + absf(d_wave) * _synoptic_amp * 0.95, 0.0, 18.0)
+	# 풍향: 저기압 통과에 따라 탁월풍 기준 ±회전(접근 시 backing, 통과 후 veering).
+	# 북반구는 저기압 둘레 반시계 → 통과하며 남동→남서→북서로 도는 경향을 sin으로 근사.
+	_auto_wind_dir_target = fmod(prevail_dir + hemi * 55.0 * sin(ph + 0.5) + 360.0, 360.0)
+
+	# ── 부드러운 적용 ──
 	rain_rate          = move_toward(rain_rate,          _auto_rain_target,     delta * 3.0)
 	overcast_intensity = move_toward(overcast_intensity, _auto_overcast_target, delta * 0.12)
-	# 풍속: 0.8 m/s per second 속도로 변화
-	wind_speed = move_toward(wind_speed, _auto_wind_speed_target, delta * 0.8)
-	# 풍향: 최단 방향으로 초당 20° 회전 (원형 보간)
+	wind_speed         = move_toward(wind_speed,         _auto_wind_speed_target, delta * 0.8)
 	var dir_diff: float = fmod((_auto_wind_dir_target - wind_direction + 540.0), 360.0) - 180.0
 	wind_direction = fmod(wind_direction + clampf(dir_diff, -delta * 20.0, delta * 20.0) + 360.0, 360.0)
 
-func _roll_auto_weather(cur_month: int) -> void:
+# 검증용: 기압 구동 자동날씨를 N 시뮬일 진행하며 시퀀스 출력(렌더 불필요).
+func _run_autowx_test(args: PackedStringArray) -> void:
+	auto_weather = true
+	var li := args.find("--lat"); if li >= 0 and li + 1 < args.size(): latitude = float(args[li + 1])
+	var oi := args.find("--lon"); if oi >= 0 and oi + 1 < args.size(): longitude = float(args[oi + 1])
+	var mi := args.find("--month"); var mo := int(args[mi + 1]) if mi >= 0 and mi + 1 < args.size() else 6
+	var ti := args.find("--temp"); var tfix := float(args[ti + 1]) if ti >= 0 and ti + 1 < args.size() else 15.0
+	var di := args.find("--days"); var ndays := float(args[di + 1]) if di >= 0 and di + 1 < args.size() else 30.0
+	day_length_sec = 100.0
+	var sim_speed: float = 86400.0 / day_length_sec
+	var step_real: float = (0.25 * 86400.0) / sim_speed   # 0.25 시뮬일/스텝의 실제 delta
+	_auto_wx_sim_timer = 0.0
+	var steps: int = int(ndays / 0.25)
+	print("AWX_TEST lat=%.1f month=%d temp=%.1f days=%.0f" % [latitude, mo, tfix, ndays])
+	for i in range(steps):
+		sim_temperature = tfix
+		_update_auto_weather(step_real, mo)
+		if i % 2 == 0:   # 0.5일마다 출력
+			print("AWX d=%5.1f  P=%6.1f %s  wx=%-8s rain=%4.1f  wind=%4.1fm/s@%3.0f" % [
+				float(i) * 0.25, sim_pressure,
+				("DN" if _pressure_tend < -0.2 else ("UP" if _pressure_tend > 0.2 else "--")),
+				weather_type, _auto_rain_target, wind_speed, wind_direction])
+
+# 종관 시스템 파라미터 재설정 — 기후(폭풍대·계절)로 진폭·주기 결정(통계 외피)
+func _roll_synoptic_params(cur_month: int) -> void:
 	var params: Dictionary = WorldSimWeather.get_params(latitude, cur_month)
 	var bias:   Dictionary = _get_climate_bias(latitude, longitude, cur_month)
-	# 다음 날씨 지속: 1-4 시뮬레이션 일 (= 86400 sim초/일)
-	_auto_wx_sim_timer = _auto_wx_rng.randf_range(86400.0, 86400.0 * 4.0)
-
-	var adj_precip: float = clampf(float(params["precip_prob"]) * float(bias["precip_mult"]), 0.0, 0.98)
-	if _auto_wx_rng.randf() < adj_precip:
-		# 강수 결정 — 눈/비 판정: 기후 경향 + 온도 보정
-		var sb: float = float(params["snow_bias"])
-		if sim_temperature < 0.0:
-			sb = clampf(sb + 0.35, 0.0, 0.97)
-		elif sim_temperature > 4.0:
-			sb = maxf(0.0, sb - 0.25)
-		weather_type = "SNOW" if _auto_wx_rng.randf() < sb else "RAIN"
-		var rate: float = float(params["rain_rate_mean"]) * _auto_wx_rng.randf_range(0.4, 2.5)
-		_auto_rain_target = clampf(rate, 0.5, 55.0)
-	else:
-		_auto_rain_target = 0.0
-		var cb: float  = float(params["cloud_cover"])
-		var cr: float  = _auto_wx_rng.randf()
-		if cr < cb * 0.28:
-			weather_type          = "OVERCAST"
-			_auto_overcast_target = _auto_wx_rng.randf_range(0.30, 0.88)
-		elif cr < cb * 0.62:
-			weather_type = "CUMULUS"
-		elif cr < cb:
-			weather_type = "CIRRUS"
-		else:
-			weather_type = "CLEAR"
-
-	# 날씨 유형별 풍속 범위 (m/s)
-	var ws_min: float; var ws_max: float
-	match weather_type:
-		"CLEAR":    ws_min = 0.0; ws_max = 3.0
-		"CIRRUS":   ws_min = 2.0; ws_max = 7.0
-		"CUMULUS":  ws_min = 3.0; ws_max = 9.0
-		"OVERCAST": ws_min = 5.0; ws_max = 13.0
-		"RAIN":     ws_min = 4.0; ws_max = 16.0
-		"SNOW":     ws_min = 1.0; ws_max = 12.0
-		_:          ws_min = 0.0; ws_max = 5.0
-	_auto_wind_speed_target = _auto_wx_rng.randf_range(ws_min, ws_max)
-	# 탁월풍 기반 풍향 — 완전 랜덤 대신 기후대 편향, 날씨별 편차 폭 추가
-	var prevail_dir: float = _prevailing_wind_dir(latitude)
-	var spread: float
-	match weather_type:
-		"CLEAR":    spread = 20.0   # 맑음: 안정적, 탁월풍에 가깝게
-		"CIRRUS":   spread = 30.0
-		"CUMULUS":  spread = 40.0
-		"OVERCAST": spread = 55.0   # 저기압성 흐림: 기압 배치에 따라 편차 큼
-		"RAIN":     spread = 65.0   # 비: 저기압 중심으로 회전, 방향 흐트러짐
-		"SNOW":     spread = 50.0
-		_:          spread = 40.0
-	_auto_wind_dir_target = fmod(prevail_dir + _auto_wx_rng.randf_range(-spread, spread) + 360.0, 360.0)
+	# 다음 재설정까지 2~5 시뮬일
+	_auto_wx_sim_timer = _auto_wx_rng.randf_range(86400.0 * 2.0, 86400.0 * 5.0)
+	# 진폭: 강수확률 높은 폭풍대일수록 기압 변동 큼(5~16 hPa). 건조 고기압대는 작게.
+	var storm: float = clampf(float(params["precip_prob"]) * float(bias["precip_mult"]), 0.0, 1.0)
+	_synoptic_amp = lerpf(4.0, 16.0, storm) * _auto_wx_rng.randf_range(0.8, 1.2)
+	# 주기: 중위도 3~6일, 약간 랜덤
+	_synoptic_period_days = _auto_wx_rng.randf_range(3.0, 6.0)
 
 static func _get_climate_bias(latitude: float, longitude: float, month: int) -> Dictionary:
 	# 위도+경도 기반 기후 보정 (동일 위도라도 대륙/해양/몬순 차이 반영)
