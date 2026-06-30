@@ -25,9 +25,13 @@ const float Hr = 7994.0;      // Rayleigh 밀도 척도고도 (8km)
 const float Hm = 1200.0;      // Mie 밀도 척도고도 (1.2km)
 // Rayleigh 산란계수 (파장별, /m) — 청색이 가장 강함 → 낮 하늘 파랑, 일몰 빨강
 const vec3  betaR = vec3(5.8e-6, 13.5e-6, 33.1e-6);
-// Mie 산란계수 (파장 무관, 에어로졸) — 전방산란으로 태양 주변 흰 광환.
-// 값이 크면 태양 주변이 넓게 순백 폭발해 노을 색을 가림 → 적정값으로 축소.
+// Mie 산란계수 (파장 무관, 에어로졸) — 전방산란으로 태양 주변 흰 광환. in-scatter 광원은
+// 회색 유지(Mie 광환은 흰색). 값이 크면 태양 주변이 넓게 순백 폭발해 노을 색을 가림.
 const vec3  betaM = vec3(6e-6);
+// Mie '소광'은 Ångström 파장의존(짧은 파장 더 소광): 긴 경로(노을·혼탁)에서 햇빛이 적화돼
+// 지평선 광환이 흰색→오렌지로. 소광에만 적용(in-scatter 광원은 betaM 회색 그대로).
+// 비 ≈ (650:550:440nm)^-1.2 → R<G<B. 회색 평균 6e-6 유지하며 채널비만 부여.
+const vec3  betaM_ext = vec3(4.8e-6, 6.0e-6, 7.6e-6);
 const float MieG  = 0.72;     // Mie 비대칭 인자 (전방산란, 낮을수록 덜 뾰족)
 // 오존 흡수계수 (Chappuis 밴드, /m) — 피크 ~600nm(주황). 실제 단면적 비
 // R(630nm):G(550nm):B(440nm) ≈ 4.5:3.1:0.5 → 빨강을 가장 많이 흡수, 파랑은 거의 통과.
@@ -83,7 +87,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 		odR += hr; odM += hm;
 		odO += ozone_density(h) * seg;             // 오존 흡수 경로 누적
 		// 등방 다중산란: 그림자 무관(2차+ 산란은 사방에서 옴), 시선 투과율만 적용.
-		vec3 att_view = exp(-(betaR * odR + betaM * mie_mul * 1.1 * odM + betaO3 * odO));
+		vec3 att_view = exp(-(betaR * odR + betaM_ext * mie_mul * 1.1 * odM + betaO3 * odO));
 		sumMS += (hr * betaR + hm * betaM * mie_mul) * att_view;
 
 		// 이 샘플에서 태양까지의 광선 — 지구에 가리면(그림자) 빛 없음
@@ -103,7 +107,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, vec3 sun, float mie_mul) {
 			// 투과율 = exp(-(시선OD + 태양OD)·β). Mie 소광 ≈ 1.1× 산란.
 			// 오존은 순수 흡수 → 소광에만 더함(산란 광원엔 없음).
 			vec3 tau = betaR * (odR + odLR)
-			         + betaM * mie_mul * 1.1 * (odM + odLM)
+			         + betaM_ext * mie_mul * 1.1 * (odM + odLM)
 			         + betaO3 * (odO + odLO);
 			vec3 att = exp(-tau);
 			sumR += att * hr;
